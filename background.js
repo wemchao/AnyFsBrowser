@@ -1,6 +1,6 @@
 chrome.action.onClicked.addListener(async () => {
   const url = chrome.runtime.getURL("app.html");
-  await chrome.windows.create({ url, type: "normal" });
+  await chrome.tabs.create({ url, active: true });
 });
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
