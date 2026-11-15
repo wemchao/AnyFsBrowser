@@ -2,6 +2,7 @@ const inputs = [...document.querySelectorAll('input[name="interfaceStyle"]')];
 const markdownLayoutInputs = [
   ...document.querySelectorAll('input[name="markdownDefaultLayout"]'),
 ];
+const homeButton = document.querySelector("#settingsHomeButton");
 const notice = document.querySelector("#savedNotice");
 
 function storageGet() {
@@ -64,5 +65,11 @@ for (const input of markdownLayoutInputs) {
     showSavedNotice();
   });
 }
+
+homeButton.addEventListener("click", () => {
+  location.href = globalThis.chrome?.runtime?.getURL
+    ? chrome.runtime.getURL("app.html")
+    : "/";
+});
 
 init();
