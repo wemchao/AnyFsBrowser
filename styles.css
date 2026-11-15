@@ -2106,6 +2106,9 @@ a.glass-button {
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
   padding: 9px 14px;
   border: 1px solid rgba(255, 196, 92, 0.35);
   border-radius: 9px;
@@ -2113,6 +2116,37 @@ a.glass-button {
   color: #ffd98a;
   font-size: 12px;
   backdrop-filter: blur(12px);
+}
+
+.viewer-notice-progress {
+  --progress: 0;
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      var(--accent) calc(var(--progress) * 1%),
+      rgba(255, 255, 255, 0.15) 0
+    );
+}
+
+.viewer-notice-progress::before {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: rgba(50, 38, 13, 0.98);
+  content: "";
+}
+
+.viewer-notice-progress span {
+  position: relative;
+  z-index: 1;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .previous {

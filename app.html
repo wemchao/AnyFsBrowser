@@ -276,7 +276,10 @@
           <button id="actualButton" class="glass-button" type="button">100%</button>
         </div>
         <div id="viewerNotice" class="viewer-notice hidden">
-          当前为缩放预览，原始分块准备完成后会自动切换。
+          <div id="viewerNoticeProgress" class="viewer-notice-progress" style="--progress: 0">
+            <span id="viewerNoticeProgressText">0%</span>
+          </div>
+          <span id="viewerNoticeText">正在后台准备清晰浏览图…</span>
         </div>
         <button id="previousButton" class="nav-button previous" type="button" aria-label="上一张">‹</button>
         <button id="nextButton" class="nav-button next" type="button" aria-label="下一张">›</button>

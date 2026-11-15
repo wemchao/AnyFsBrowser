@@ -177,6 +177,9 @@ const elements = {
   viewerName: $("#viewerName"),
   viewerMeta: $("#viewerMeta"),
   viewerNotice: $("#viewerNotice"),
+  viewerNoticeProgress: $("#viewerNoticeProgress"),
+  viewerNoticeProgressText: $("#viewerNoticeProgressText"),
+  viewerNoticeText: $("#viewerNoticeText"),
   viewerLoading: $("#viewerLoading"),
   viewerProgress: $("#viewerProgress"),
   viewerProgressText: $("#viewerProgressText"),
@@ -4090,6 +4093,13 @@ function setViewerProgress(percent, label) {
   const value = Math.max(0, Math.min(100, Number(percent) || 0));
   elements.viewerProgress.style.setProperty("--progress", value.toFixed(1));
   elements.viewerProgressText.textContent = label || `${Math.round(value)}%`;
+  elements.viewerNoticeProgress.style.setProperty("--progress", value.toFixed(1));
+  elements.viewerNoticeProgressText.textContent = label || `${Math.round(value)}%`;
+}
+
+function setViewerProgressText(text) {
+  elements.viewerLoadingText.textContent = text;
+  elements.viewerNoticeText.textContent = text;
 }
 
 async function receiveViewerImage(url, requestId) {
@@ -4129,10 +4139,11 @@ async function receiveViewerImage(url, requestId) {
     if (lastBytes === 0 || now - lastTime >= 250) {
       const bytesPerSecond =
         (received - lastBytes) * 1000 / Math.max(1, now - lastTime);
-      elements.viewerLoadingText.textContent =
+      setViewerProgressText(
         `正在接收清晰图片：${formatBytes(received)}` +
         `${total ? ` / ${formatBytes(total)}` : ""} · ` +
-        `${formatBytes(bytesPerSecond)}/s`;
+        `${formatBytes(bytesPerSecond)}/s`,
+      );
       if (total) setViewerProgress(received / total * 100);
       else setViewerProgress(0, "接收");
       lastBytes = received;
@@ -4199,7 +4210,7 @@ async function trackBrowserImageProgress(progressId, requestId, control) {
         } else if (progress.phase === "ready") {
           setViewerProgress(100);
         }
-        elements.viewerLoadingText.textContent = text;
+        setViewerProgressText(text);
         if (progress.done) return;
       }
     } catch {
@@ -4231,7 +4242,8 @@ async function openViewer(recoveryAttempt = 0) {
   elements.viewerLoading.classList.remove("hidden");
   setViewerProgress(0);
   elements.viewerLoadingText.textContent = "正在打开图片…";
-  elements.viewerNotice.textContent = "正在后台准备清晰浏览图…";
+  elements.viewerNoticeProgress.classList.remove("hidden");
+  elements.viewerNoticeText.textContent = "正在后台准备清晰浏览图…";
   elements.viewerNotice.classList.toggle(
     "hidden",
     !state.readyThumbnails.has(image.id),
@@ -4275,9 +4287,10 @@ async function openViewer(recoveryAttempt = 0) {
     }, 0, 4, (attempt) => {
       if (requestId !== state.viewerRequestId) return;
       elements.viewerLoading.classList.remove("hidden");
-      elements.viewerLoadingText.textContent =
-        `连接中断，正在自动重连（${attempt}/4）…`;
-      elements.viewerNotice.textContent = "缩略图仍可浏览，连接恢复后会自动加载清晰图片。";
+      setViewerProgress(0, "重连");
+      setViewerProgressText(
+        `连接中断，正在自动重连（${attempt}/4）；缩略图仍可浏览。`,
+      );
       elements.viewerNotice.classList.remove("hidden");
     });
     progressControl.stopped = true;
@@ -4304,7 +4317,7 @@ async function openViewer(recoveryAttempt = 0) {
       )
       : "";
     setViewerProgress(0);
-    elements.viewerLoadingText.textContent = "正在接收清晰图片…";
+    setViewerProgressText("正在接收清晰图片…");
     const receivedImageUrl = await receiveViewerImage(imageUrl, requestId);
     if (
       requestId !== state.viewerRequestId ||
@@ -4312,7 +4325,7 @@ async function openViewer(recoveryAttempt = 0) {
     ) return;
     state.viewerImageUrl = receivedImageUrl;
     setViewerProgress(100, "解码");
-    elements.viewerLoadingText.textContent = "正在解码清晰图片…";
+    setViewerProgressText("正在解码清晰图片…");
     const removePreparedHandlers = () => {
       viewer.removeHandler("open", handlePreparedOpen);
       viewer.removeHandler("open-failed", handlePreparedFailure);
@@ -4321,7 +4334,8 @@ async function openViewer(recoveryAttempt = 0) {
       removePreparedHandlers();
       if (requestId !== state.viewerRequestId) return;
       elements.viewerLoading.classList.add("hidden");
-      elements.viewerNotice.textContent = preparedNotice;
+      elements.viewerNoticeProgress.classList.add("hidden");
+      elements.viewerNoticeText.textContent = preparedNotice;
       elements.viewerNotice.classList.toggle("hidden", !preparedNotice);
     };
     const handlePreparedFailure = async (event) => {
@@ -4329,8 +4343,10 @@ async function openViewer(recoveryAttempt = 0) {
       if (requestId !== state.viewerRequestId) return;
       if (recoveryAttempt < 3 && IS_EXTENSION) {
         elements.viewerLoading.classList.remove("hidden");
-        elements.viewerLoadingText.textContent =
-          `清晰图片连接中断，正在恢复（${recoveryAttempt + 1}/3）…`;
+        setViewerProgress(0, "重连");
+        setViewerProgressText(
+          `清晰图片连接中断，正在恢复（${recoveryAttempt + 1}/3）…`,
+        );
         if (await connectServer(true)) {
           await delay(300 * (recoveryAttempt + 1));
           if (requestId === state.viewerRequestId) {
@@ -4356,8 +4372,10 @@ async function openViewer(recoveryAttempt = 0) {
     if (error.name === "AbortError") return;
     if (recoveryAttempt < 3 && IS_EXTENSION) {
       elements.viewerLoading.classList.remove("hidden");
-      elements.viewerLoadingText.textContent =
-        `图片接收中断，正在恢复（${recoveryAttempt + 1}/3）…`;
+      setViewerProgress(0, "重连");
+      setViewerProgressText(
+        `图片接收中断，正在恢复（${recoveryAttempt + 1}/3）…`,
+      );
       if (await connectServer(true)) {
         await delay(300 * (recoveryAttempt + 1));
         if (requestId === state.viewerRequestId) {
