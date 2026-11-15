@@ -24,10 +24,20 @@ if (( NODE_MAJOR < 20 )); then
 fi
 
 echo "正在从 GitHub 下载 AnyFs Browser…"
-curl --fail --location --silent --show-error \
+if ! curl --fail --location --silent --show-error \
   --retry 3 \
   "$ASSET_URL" \
   --output "$TEMP_DIR/release.zip"
+then
+  echo "代理连接失败，正在尝试直连 GitHub…"
+  env \
+    -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    -u http_proxy -u https_proxy -u all_proxy \
+    curl --fail --location --silent --show-error \
+      --retry 3 \
+      "$ASSET_URL" \
+      --output "$TEMP_DIR/release.zip"
+fi
 unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/release"
 
 SOURCE_DIR="$TEMP_DIR/release/AnyFsBrowser-lite"
