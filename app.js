@@ -23,6 +23,7 @@ const state = {
   visibleEntries: [],
   images: [],
   currentTreeFileId: null,
+  archiveReturnContext: null,
   currentIndex: 0,
   thumbnailSize: 220,
   markdownDefaultLayout: "wide",
@@ -89,6 +90,7 @@ const elements = {
   sidebarResizer: $("#sidebarResizer"),
   searchInput: $("#searchInput"),
   thumbnailSize: $("#thumbnailSize"),
+  downloadDirectoryButton: $("#downloadDirectoryButton"),
   favoriteButton: $("#favoriteButton"),
   closeFileButton: $("#closeFileButton"),
   fileHomeButton: $("#fileHomeButton"),
@@ -357,6 +359,9 @@ function relativeImageDescriptor(documentEntry, source) {
       ? relativePath
       : `${dirname(descriptor.key)}/${relativePath}`;
     descriptor.key = normalizeAssetPath(combined, false);
+  } else if (descriptor.kind === "archive") {
+    const combined = `${dirname(descriptor.member)}/${relativePath}`;
+    descriptor.member = normalizeAssetPath(combined, false);
   } else {
     const absolute = relativePath.startsWith("/");
     const combined = absolute
@@ -403,19 +408,31 @@ function entryPathForCopy(entry) {
     return `s3://${descriptor.bucket}/${descriptor.key.replace(/^\/+/, "")}`;
   }
   if (descriptor.kind === "ssh") {
-    if (descriptor.port) {
-      const remotePath = descriptor.path.startsWith("/")
-        ? descriptor.path
-        : `/${descriptor.path}`;
-      return `ssh://${descriptor.target}:${descriptor.port}${remotePath}`;
-    }
-    return `${descriptor.target}:${descriptor.path}`;
+    return descriptor.path;
+  }
+  if (descriptor.kind === "archive") {
+    return `${entryPathForCopy({ id: encodeEntryDescriptor(descriptor.archive) })}` +
+      `!/${descriptor.member}`;
   }
   return entry.childSource || entry.relativePath || entry.name;
 }
 
+function copyPathValue(value) {
+  if (sourceType(value) !== "SSH") return publicSource(value);
+  if (value.startsWith("ssh://")) {
+    try {
+      return decodeURIComponent(new URL(value).pathname) || "/";
+    } catch {
+      return value;
+    }
+  }
+  const normalized = value.startsWith("ssh ") ? value.slice(4) : value;
+  const match = normalized.match(/^[^:]+:(.*)$/);
+  return match ? match[1] : normalized;
+}
+
 async function copyPath(value, type) {
-  const text = publicSource(value);
+  const text = copyPathValue(value);
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -436,13 +453,58 @@ function createCopyPathButton(value, type) {
   button.className = "directory-copy-button";
   button.type = "button";
   button.textContent = "⧉";
-  button.title = `复制${type}路径：${publicSource(value)}`;
+  button.title = `复制${type}路径：${copyPathValue(value)}`;
   button.setAttribute("aria-label", `复制${type}路径`);
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     copyPath(value, type);
   });
   return button;
+}
+
+function triggerDownload(url, fileName = "") {
+  const link = document.createElement("a");
+  link.href = url;
+  if (fileName) link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function createFileDownloadButton(entry) {
+  const button = document.createElement("button");
+  button.className = "entry-download-button";
+  button.type = "button";
+  button.textContent = "↓";
+  button.title = `下载 ${entry.name || entry.relativePath}`;
+  button.setAttribute("aria-label", `下载 ${entry.name || entry.relativePath}`);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    triggerDownload(
+      apiUrl("/api/file", { id: entry.id, download: "1" }),
+      entry.name || "download",
+    );
+  });
+  return button;
+}
+
+function directoryDownloadUrl(node) {
+  if (node.archiveId) {
+    if (!node.archivePath) {
+      return apiUrl("/api/file", { id: node.archiveId, download: "1" });
+    }
+    return apiUrl("/api/download-directory", {
+      archiveId: node.archiveId,
+      path: node.archivePath,
+    });
+  }
+  return apiUrl("/api/download-directory", { source: node.source });
+}
+
+function downloadDirectoryNode(node) {
+  if (!node || node.syntheticS3Root) return;
+  const name = `${node.name || "files"}${node.archiveId && !node.archivePath ? "" : ".zip"}`;
+  triggerDownload(directoryDownloadUrl(node), name);
 }
 
 function parentPath(value) {
@@ -1236,20 +1298,26 @@ async function connectServer(forceRestart = false) {
 }
 
 function updateDirectoryNode(node, entries) {
-  const previous = new Map(node.children.map((child) => [child.source, child]));
+  const previous = new Map(node.children.map((child) => [
+    child.archivePath || child.source,
+    child,
+  ]));
   node.entries = entries;
   node.children = entries
     .filter((entry) => entry.type === "directory")
     .map((entry) => {
-      const existing = previous.get(entry.childSource);
+      const key = entry.archivePath || entry.childSource;
+      const existing = previous.get(key);
       if (existing) {
         existing.name = entry.name;
         return existing;
       }
       return {
-        source: entry.childSource,
+        source: entry.childSource || `${node.source}${entry.name}/`,
         name: entry.name,
         parent: node,
+        archiveId: node.archiveId,
+        archivePath: entry.archivePath,
         loaded: false,
         loading: false,
         expanded: false,
@@ -1277,6 +1345,7 @@ function createDirectoryRoot(source, entries) {
 
 function updateSelectedDirectory(node, updateRoute = true) {
   const syntheticRoot = Boolean(node.syntheticS3Root);
+  const archiveDirectory = Boolean(node.archiveId);
   state.selectedDirectory = node;
   state.source = syntheticRoot ? "" : node.source;
   state.entries = node.entries.filter((entry) => entry.type !== "directory");
@@ -1291,12 +1360,15 @@ function updateSelectedDirectory(node, updateRoute = true) {
   );
   elements.galleryTitle.textContent = syntheticRoot ? "Buckets" : node.name;
   elements.searchInput.value = "";
-  elements.favoriteButton.classList.toggle("hidden", syntheticRoot);
+  elements.favoriteButton.classList.toggle("hidden", syntheticRoot || archiveDirectory);
+  elements.downloadDirectoryButton.classList.toggle("hidden", syntheticRoot);
+  elements.downloadDirectoryButton.textContent =
+    archiveDirectory && !node.archivePath ? "↓ 下载归档" : "↓ 下载目录";
   renderDirectoryTree();
   renderGallery();
   if (!syntheticRoot) syncFavoriteButton();
 
-  if (updateRoute && !syntheticRoot) {
+  if (updateRoute && !syntheticRoot && !archiveDirectory) {
     const route = routeForSource(node.source);
     const currentRoute = IS_EXTENSION
       ? location.hash
@@ -1314,11 +1386,19 @@ async function loadDirectoryNode(node, force = false) {
   node.loading = true;
   renderDirectoryTree();
   try {
-    await registerS3ConfigForSource(node.source);
-    const result = await api("/api/list", {
-      source: node.source,
-      refresh: force ? "1" : "0",
-    });
+    let result;
+    if (node.archiveId) {
+      result = await api("/api/archive/list", {
+        id: node.archiveId,
+        path: node.archivePath || "",
+      });
+    } else {
+      await registerS3ConfigForSource(node.source);
+      result = await api("/api/list", {
+        source: node.source,
+        refresh: force ? "1" : "0",
+      });
+    }
     if (result.targetType !== "directory") throw new Error("该路径不是目录");
     updateDirectoryNode(node, result.images);
   } finally {
@@ -1340,6 +1420,66 @@ async function selectDirectoryNode(node) {
     updateSelectedDirectory(node);
   } catch (error) {
     showToast(`目录读取失败：${error.message}`);
+  } finally {
+    elements.galleryLoading.classList.add("hidden");
+  }
+}
+
+function captureDirectoryContext() {
+  if (!state.directoryRoot) return null;
+  return {
+    directoryRoot: state.directoryRoot,
+    selectedDirectory: state.selectedDirectory,
+    source: state.source,
+    targetType: state.targetType,
+  };
+}
+
+function restoreCapturedDirectoryContext(context) {
+  if (!context) {
+    showHome();
+    return;
+  }
+  state.directoryRoot = context.directoryRoot;
+  state.selectedDirectory = context.selectedDirectory;
+  state.source = context.source;
+  state.targetType = context.targetType;
+  state.archiveReturnContext = context.directoryRoot.archiveReturnContext || null;
+  updateSelectedDirectory(context.selectedDirectory, false);
+  showGallery();
+}
+
+async function openArchive(entry) {
+  const returnContext = captureDirectoryContext();
+  closeViewer(false);
+  closeFileViewer(false);
+  elements.galleryLoading.classList.remove("hidden");
+  try {
+    const result = await api("/api/archive/list", { id: entry.id, path: "" });
+    const archivePath = entryPathForCopy(entry);
+    const root = {
+      source: `${archivePath}!/`,
+      name: entry.name || "归档文件",
+      parent: null,
+      archiveId: entry.id,
+      archivePath: "",
+      archiveReturnContext: returnContext,
+      loaded: true,
+      loading: false,
+      expanded: true,
+      entries: [],
+      children: [],
+    };
+    updateDirectoryNode(root, result.images);
+    state.archiveReturnContext = returnContext;
+    state.targetType = "directory";
+    state.directoryRoot = root;
+    state.selectedDirectory = root;
+    state.currentTreeFileId = null;
+    updateSelectedDirectory(root, false);
+    showGallery();
+  } catch (error) {
+    showToast(`归档文件打开失败：${error.message}`);
   } finally {
     elements.galleryLoading.classList.add("hidden");
   }
@@ -1373,6 +1513,8 @@ function renderDirectoryTree() {
     if (entry.type === "image") {
       state.currentIndex = state.images.findIndex((image) => image.id === entry.id);
       openViewer();
+    } else if (entry.type === "archive") {
+      openArchive(entry);
     } else {
       openFileViewer(entry);
     }
@@ -1391,6 +1533,8 @@ function renderDirectoryTree() {
     const extension = entry.name?.split(".").at(-1)?.toLocaleLowerCase();
     icon.textContent = entry.type === "image"
       ? "▧"
+      : entry.type === "archive"
+        ? "▣"
       : extension === "md" || extension === "markdown"
         ? "M"
         : extension === "json"
@@ -1399,8 +1543,10 @@ function renderDirectoryTree() {
     const label = document.createElement("span");
     label.className = "directory-label";
     label.textContent = entry.name || entry.relativePath;
+    const downloadButton = createFileDownloadButton(entry);
+    downloadButton.className = "directory-copy-button";
     const copyButton = createCopyPathButton(entryPathForCopy(entry), "文件");
-    row.append(spacer, icon, label, copyButton);
+    row.append(spacer, icon, label, downloadButton, copyButton);
     row.addEventListener("click", () => openTreeFile(node, entry));
     if (entry.type === "image") {
       row.addEventListener("contextmenu", (event) => {
@@ -1433,8 +1579,17 @@ function renderDirectoryTree() {
     const label = document.createElement("span");
     label.className = "directory-label";
     label.textContent = node.name || node.source;
+    const downloadButton = document.createElement("button");
+    downloadButton.className = "directory-copy-button";
+    downloadButton.type = "button";
+    downloadButton.textContent = "↓";
+    downloadButton.title = `下载目录：${node.name || node.source}`;
+    downloadButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      downloadDirectoryNode(node);
+    });
     const copyButton = createCopyPathButton(node.source, "目录");
-    row.append(toggle, icon, label, copyButton);
+    row.append(toggle, icon, label, downloadButton, copyButton);
     row.addEventListener("click", () => selectDirectoryNode(node));
     fragment.append(row);
 
@@ -1452,7 +1607,8 @@ function renderDirectoryTree() {
     "hidden",
     !selected?.loaded || selected.entries.length > 0,
   );
-  elements.directoryUpButton.disabled = !selected?.parent;
+  elements.directoryUpButton.disabled =
+    !selected?.parent && !state.directoryRoot?.archiveReturnContext;
 }
 
 async function openSource(source, force = false, options = {}) {
@@ -1509,6 +1665,8 @@ async function openSource(source, force = false, options = {}) {
     state.targetType = result.targetType;
     const rootEntries = result.images;
     if (result.targetType === "directory") {
+      elements.downloadDirectoryButton.classList.remove("hidden");
+      elements.downloadDirectoryButton.textContent = "↓ 下载目录";
       state.directoryRoot = createDirectoryRoot(cleanSource, rootEntries);
       state.selectedDirectory = state.directoryRoot;
       state.entries = rootEntries.filter((entry) => entry.type !== "directory");
@@ -1534,6 +1692,8 @@ async function openSource(source, force = false, options = {}) {
       if (result.images[0].type === "image") {
         state.currentIndex = 0;
         await openViewer();
+      } else if (result.images[0].type === "archive") {
+        await openArchive(result.images[0]);
       } else {
         openFileViewer(result.images[0]);
       }
@@ -1542,6 +1702,8 @@ async function openSource(source, force = false, options = {}) {
       if (entry?.type === "image") {
         state.currentIndex = state.images.findIndex((image) => image.id === entry.id);
         await openViewer();
+      } else if (entry?.type === "archive") {
+        await openArchive(entry);
       } else if (entry) {
         await openFileViewer(entry);
       } else {
@@ -1644,11 +1806,14 @@ function renderGallery() {
       const symbol = document.createElement("div");
       symbol.className = "file-symbol";
       const extension = entry.name?.split(".").at(-1);
-      symbol.textContent = extension && extension !== entry.name
+      symbol.textContent = entry.type === "archive"
+        ? "ARCHIVE"
+        : extension && extension !== entry.name
         ? extension.slice(0, 5).toLocaleUpperCase()
         : "FILE";
       preview.append(symbol);
     }
+    preview.append(createFileDownloadButton(entry));
 
     const info = document.createElement("div");
     info.className = "image-info";
@@ -1656,7 +1821,11 @@ function renderGallery() {
     name.textContent = entry.relativePath;
     name.title = entry.relativePath;
     const meta = document.createElement("span");
-    const typeLabel = entry.type === "image" ? "图片" : "文件";
+    const typeLabel = entry.type === "image"
+      ? "图片"
+      : entry.type === "archive"
+        ? "归档"
+        : "文件";
     meta.textContent = [typeLabel, formatBytes(entry.size)].filter(Boolean).join(" · ");
     info.append(name, meta);
 
@@ -1665,6 +1834,8 @@ function renderGallery() {
       if (entry.type === "image") {
         state.currentIndex = state.images.findIndex((item) => item.id === entry.id);
         openViewer();
+      } else if (entry.type === "archive") {
+        openArchive(entry);
       } else {
         openFileViewer(entry);
       }
@@ -1691,6 +1862,9 @@ function searchImages(value) {
 function navigateDirectoryUp() {
   const parent = state.selectedDirectory?.parent;
   if (parent) selectDirectoryNode(parent);
+  else if (state.directoryRoot?.archiveId) {
+    restoreCapturedDirectoryContext(state.directoryRoot.archiveReturnContext);
+  }
   else showHome();
 }
 
@@ -1712,7 +1886,9 @@ async function refreshCurrentDirectory() {
   try {
     await loadDirectoryNode(node, true);
     updateSelectedDirectory(node, false);
-    history.replaceState(routeState(node.source), "", routeForSource(node.source));
+    if (!node.archiveId) {
+      history.replaceState(routeState(node.source), "", routeForSource(node.source));
+    }
 
     if (!activePath || (!imageWasOpen && !fileWasOpen)) return;
     const refreshedEntry = node.entries.find(
@@ -2223,7 +2399,11 @@ async function openFileViewer(entry) {
   elements.fileHomeButton.classList.toggle("hidden", directFile);
   elements.fileView.classList.toggle("with-directory", !directFile);
   elements.fileViewName.textContent = entry.relativePath || entry.name;
-  elements.downloadFileButton.href = url;
+  elements.downloadFileButton.href = apiUrl("/api/file", {
+    id: entry.id,
+    download: "1",
+  });
+  elements.downloadFileButton.download = entry.name || "download";
   elements.fileFormatBadge.textContent = formattedFileLabel(kind, entry);
   elements.fileFormatBadge.classList.toggle("hidden", !kind);
   elements.markdownLayoutControls.classList.toggle("hidden", kind !== "markdown");
@@ -2637,6 +2817,9 @@ elements.settingsButton.addEventListener("click", () => {
 elements.backButton.addEventListener("click", navigateDirectoryUp);
 elements.directoryUpButton.addEventListener("click", navigateDirectoryUp);
 elements.refreshButton.addEventListener("click", refreshCurrentDirectory);
+elements.downloadDirectoryButton.addEventListener("click", () => {
+  downloadDirectoryNode(state.selectedDirectory);
+});
 elements.favoriteButton.addEventListener("click", toggleFavorite);
 elements.searchInput.addEventListener("input", (event) => searchImages(event.target.value));
 elements.searchInput.addEventListener("keydown", async (event) => {

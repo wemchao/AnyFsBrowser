@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
+const { once } = require("node:events");
 const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const {
@@ -15,6 +16,7 @@ const {
   HeadObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { fromIni } = require("@aws-sdk/credential-providers");
+const ZipStream = require("zip-stream").default;
 const sharp = require("sharp");
 const { RemoteAgentManager } = require("./remote-agent");
 
@@ -35,11 +37,15 @@ const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff",
   ".gif", ".bmp", ".avif", ".heic", ".heif", ".svg",
 ]);
+const ARCHIVE_SUFFIXES = [
+  ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz", ".tar", ".zip",
+];
 const jobs = new Map();
 let browserImageQueue = Promise.resolve();
 const remoteAgents = new RemoteAgentManager();
 const remoteBrowserImages = new Map();
 const htmlRenderSessions = new Map();
+const archiveListings = new Map();
 
 function sendNativeMessage(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -101,17 +107,35 @@ function encodeDescriptor(descriptor) {
   return Buffer.from(JSON.stringify(descriptor)).toString("base64url");
 }
 
+function archiveFormatFor(filePath) {
+  const lower = String(filePath || "").toLowerCase();
+  const suffix = ARCHIVE_SUFFIXES.find((item) => lower.endsWith(item));
+  if (!suffix) return "";
+  return suffix === ".zip" ? "zip" : "tar";
+}
+
+function entryTypeForPath(filePath) {
+  if (IMAGE_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase())) return "image";
+  if (archiveFormatFor(filePath)) return "archive";
+  return "file";
+}
+
+function validDescriptor(descriptor, depth = 0) {
+  if (!descriptor || depth > 5) return false;
+  if (descriptor.kind === "archive") {
+    return Boolean(descriptor.member) && validDescriptor(descriptor.archive, depth + 1);
+  }
+  if (!["local", "ssh", "s3"].includes(descriptor.kind)) return false;
+  return descriptor.kind === "s3" ? Boolean(descriptor.key) : Boolean(descriptor.path);
+}
+
 function decodeDescriptor(id) {
   if (!id || id.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(id)) {
     throw new HttpError(400, "无效的图片标识");
   }
   try {
     const descriptor = JSON.parse(Buffer.from(id, "base64url").toString("utf8"));
-    if (
-      !descriptor ||
-      !["local", "ssh", "s3"].includes(descriptor.kind) ||
-      (descriptor.kind === "s3" ? !descriptor.key : !descriptor.path)
-    ) {
+    if (!validDescriptor(descriptor)) {
       throw new Error("invalid");
     }
     return descriptor;
@@ -282,7 +306,6 @@ async function listLocal(source, recursive) {
     throw new HttpError(404, `目录不存在：${source.path}`);
   }
   if (rootStat.isFile()) {
-    const isImage = IMAGE_EXTENSIONS.has(path.extname(source.path).toLowerCase());
     return {
       targetType: "file",
       entries: [{
@@ -292,7 +315,7 @@ async function listLocal(source, recursive) {
           size: rootStat.size,
           modified: rootStat.mtimeMs,
         }),
-        type: isImage ? "image" : "file",
+        type: entryTypeForPath(source.path),
         name: path.basename(source.path),
         relativePath: path.basename(source.path),
         size: rootStat.size,
@@ -334,7 +357,6 @@ async function listLocal(source, recursive) {
       } else if (entry.isFile()) {
         const stat = await fsp.stat(fullPath).catch(() => null);
         if (!stat) continue;
-        const isImage = IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase());
         const descriptor = {
           kind: "local",
           path: fullPath,
@@ -343,7 +365,7 @@ async function listLocal(source, recursive) {
         };
         entriesResult.push({
           id: encodeDescriptor(descriptor),
-          type: isImage ? "image" : "file",
+          type: entryTypeForPath(entry.name),
           name: entry.name,
           relativePath: path.relative(source.path, fullPath),
           size: stat.size,
@@ -458,9 +480,7 @@ async function listSshLegacy(source, recursive) {
       };
       return {
         id: encodeDescriptor(descriptor),
-        type: IMAGE_EXTENSIONS.has(path.posix.extname(remotePath).toLowerCase())
-          ? "image"
-          : "file",
+        type: entryTypeForPath(remotePath),
         name: path.posix.basename(remotePath),
         relativePath: targetType === "file"
           ? path.posix.basename(remotePath)
@@ -513,7 +533,7 @@ async function listSsh(source, recursive) {
           size: item.size,
           modified: item.modified,
         }),
-        type: item.type,
+        type: item.type === "directory" ? "directory" : entryTypeForPath(item.path),
         name: item.name,
         relativePath: item.relativePath,
         size: item.size,
@@ -676,9 +696,7 @@ async function listS3(source, recursive) {
           targetType: "file",
           entries: [{
             id: encodeDescriptor(descriptor),
-            type: IMAGE_EXTENSIONS.has(
-              path.posix.extname(source.requestedKey).toLowerCase(),
-            ) ? "image" : "file",
+            type: entryTypeForPath(source.requestedKey),
             name: path.posix.basename(source.requestedKey),
             relativePath: path.posix.basename(source.requestedKey),
             size: object.ContentLength,
@@ -721,7 +739,6 @@ async function listS3(source, recursive) {
       }
       for (const object of result.Contents || []) {
         if (!object.Key || object.Key === source.prefix) continue;
-        const isImage = IMAGE_EXTENSIONS.has(path.posix.extname(object.Key).toLowerCase());
         const descriptor = {
           kind: "s3",
           bucket: source.bucket,
@@ -733,7 +750,7 @@ async function listS3(source, recursive) {
         };
         entries.push({
           id: encodeDescriptor(descriptor),
-          type: isImage ? "image" : "file",
+          type: entryTypeForPath(object.Key),
           name: path.posix.basename(object.Key),
           relativePath: object.Key.slice(source.prefix.length),
           size: object.Size,
@@ -818,7 +835,71 @@ async function downloadS3(descriptor, destination) {
   }
 }
 
+function descriptorSourcePath(descriptor) {
+  if (descriptor.kind === "s3") return descriptor.key;
+  if (descriptor.kind === "archive") return descriptor.member;
+  return descriptor.path;
+}
+
+async function runCommandToFile(command, args, destination) {
+  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.mkdir(path.dirname(destination), { recursive: true });
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const stderr = [];
+  child.stderr.on("data", (chunk) => {
+    if (stderr.reduce((total, item) => total + item.length, 0) < 1024 * 1024) {
+      stderr.push(chunk);
+    }
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else {
+        reject(new HttpError(
+          422,
+          Buffer.concat(stderr).toString("utf8").trim() || "归档文件读取失败",
+        ));
+      }
+    });
+  });
+  try {
+    await Promise.all([
+      pipeline(child.stdout, fs.createWriteStream(temporary, { flags: "wx" })),
+      exited,
+    ]);
+    await fsp.rename(temporary, destination);
+  } catch (error) {
+    child.kill("SIGKILL");
+    await fsp.rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+async function materializeArchiveMember(descriptor) {
+  if (descriptor.directory) throw new HttpError(400, "归档目录不能作为文件打开");
+  const archivePath = await materialize(descriptor.archive);
+  const format = archiveFormatFor(descriptorSourcePath(descriptor.archive));
+  if (!format) throw new HttpError(415, "不支持的归档格式");
+  const extension = path.posix.extname(descriptor.member).toLowerCase();
+  const key = sha256(JSON.stringify(descriptor));
+  const destination = path.join(REMOTE_DIR, `archive-${key}${extension}`);
+  const existing = await fsp.stat(destination).catch(() => null);
+  if (existing?.isFile()) return destination;
+  await singleJob(`archive:${key}`, () => runCommandToFile(
+    format === "zip" ? "unzip" : "tar",
+    format === "zip"
+      ? ["-p", archivePath, descriptor.member]
+      : ["-xOf", archivePath, descriptor.member],
+    destination,
+  ));
+  return destination;
+}
+
 async function materialize(descriptor) {
+  if (descriptor.kind === "archive") {
+    return materializeArchiveMember(descriptor);
+  }
   if (descriptor.kind === "local") {
     const stat = await fsp.stat(descriptor.path).catch(() => null);
     if (!stat?.isFile()) throw new HttpError(404, "图片文件不存在");
@@ -840,16 +921,24 @@ async function materialize(descriptor) {
 }
 
 function descriptorIsImage(descriptor) {
-  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+  const sourcePath = descriptorSourcePath(descriptor);
   return IMAGE_EXTENSIONS.has(path.posix.extname(sourcePath || "").toLowerCase());
 }
 
 function descriptorFileName(descriptor) {
-  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+  const sourcePath = descriptorSourcePath(descriptor);
   return path.posix.basename(sourcePath || "image").replaceAll('"', "");
 }
 
+function attachmentDisposition(fileName) {
+  const clean = String(fileName || "download").replaceAll(/[\r\n"]/g, "");
+  const fallback = clean.replaceAll(/[^\x20-\x7e]/g, "_") || "download";
+  const encoded = encodeURIComponent(clean).replaceAll("'", "%27");
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 async function ensureDescriptorVersion(descriptor) {
+  if (descriptor.kind === "archive") return descriptor;
   if (descriptor.kind === "local") {
     if (
       Number.isFinite(descriptor.size) &&
@@ -912,6 +1001,268 @@ async function ensureDescriptorVersion(descriptor) {
   }
 
   return descriptor;
+}
+
+function normalizeArchiveMember(value, directory = false) {
+  const raw = String(value || "").replaceAll("\\", "/").replace(/^\.\/+/, "");
+  if (!raw || raw.includes("\0") || raw.startsWith("/")) return "";
+  const normalized = path.posix.normalize(raw);
+  if (normalized === ".." || normalized.startsWith("../")) return "";
+  const clean = normalized.replace(/^\/+|\/+$/g, "");
+  return clean && directory ? `${clean}/` : clean;
+}
+
+async function archiveMembers(descriptor) {
+  const archivePath = await materialize(descriptor);
+  const format = archiveFormatFor(descriptorSourcePath(descriptor));
+  if (!format) throw new HttpError(415, "不支持的归档格式");
+  const stat = await fsp.stat(archivePath);
+  const cacheKey = `${archivePath}:${stat.size}:${stat.mtimeMs}`;
+  const cached = archiveListings.get(cacheKey);
+  if (cached) return { ...cached, archivePath, format };
+  const output = await runCommand(
+    format === "zip" ? "unzip" : "tar",
+    format === "zip" ? ["-Z1", archivePath] : ["-tf", archivePath],
+    { maxBytes: 64 * 1024 * 1024 },
+  );
+  const members = output.toString("utf8")
+    .split(/\r?\n/)
+    .map((item) => ({
+      path: normalizeArchiveMember(item, item.endsWith("/")),
+      directory: item.endsWith("/"),
+    }))
+    .filter((item) => item.path);
+  const result = { members };
+  archiveListings.clear();
+  archiveListings.set(cacheKey, result);
+  return { ...result, archivePath, format };
+}
+
+async function listArchive(descriptor, requestedPath = "") {
+  const { members } = await archiveMembers(descriptor);
+  const normalizedDirectory = requestedPath
+    ? normalizeArchiveMember(requestedPath, true)
+    : "";
+  if (requestedPath && !normalizedDirectory) {
+    throw new HttpError(400, "归档目录路径无效");
+  }
+  const entriesByName = new Map();
+  for (const member of members) {
+    if (!member.path.startsWith(normalizedDirectory)) continue;
+    const remainder = member.path.slice(normalizedDirectory.length).replace(/\/$/, "");
+    if (!remainder) continue;
+    const segments = remainder.split("/");
+    const name = segments[0];
+    const memberPath = `${normalizedDirectory}${name}`;
+    const isDirectory = segments.length > 1 || member.directory;
+    const existing = entriesByName.get(name);
+    if (existing?.type === "directory") continue;
+    if (isDirectory) {
+      const archivePath = `${memberPath}/`;
+      entriesByName.set(name, {
+        id: encodeDescriptor({
+          kind: "archive",
+          archive: descriptor,
+          member: archivePath,
+          directory: true,
+        }),
+        type: "directory",
+        name,
+        relativePath: name,
+        archivePath,
+        size: null,
+        modified: null,
+      });
+      continue;
+    }
+    entriesByName.set(name, {
+      id: encodeDescriptor({
+        kind: "archive",
+        archive: descriptor,
+        member: memberPath,
+      }),
+      type: entryTypeForPath(memberPath),
+      name,
+      relativePath: name,
+      size: null,
+      modified: null,
+    });
+  }
+  const entries = [...entriesByName.values()].sort((left, right) => {
+    if (left.type === "directory" && right.type !== "directory") return -1;
+    if (left.type !== "directory" && right.type === "directory") return 1;
+    return left.name.localeCompare(right.name, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+  return { targetType: "directory", entries };
+}
+
+function directoryDescriptorForSource(source) {
+  if (source.kind === "local") {
+    return { kind: "local", path: source.path, directory: true };
+  }
+  if (source.kind === "ssh") {
+    return {
+      kind: "ssh",
+      target: source.target,
+      port: source.port,
+      path: source.path,
+      directory: true,
+    };
+  }
+  return {
+    kind: "s3",
+    bucket: source.bucket,
+    key: source.prefix,
+    ...s3DescriptorConfig(source),
+    directory: true,
+  };
+}
+
+function safeZipPath(value) {
+  return String(value || "")
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment && segment !== "." && segment !== "..")
+    .join("/");
+}
+
+async function* localDirectoryFiles(descriptor) {
+  const root = descriptor.path;
+  const rootName = path.basename(root.replace(/[\\/]+$/, "")) || "files";
+  const queue = [root];
+  while (queue.length) {
+    const directory = queue.shift();
+    const entries = await fsp.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+      } else if (entry.isFile()) {
+        const stat = await fsp.stat(fullPath);
+        yield {
+          name: `${rootName}/${safeZipPath(path.relative(root, fullPath))}`,
+          stream: fs.createReadStream(fullPath),
+          date: stat.mtime,
+        };
+      }
+    }
+  }
+}
+
+async function* sshDirectoryFiles(descriptor) {
+  const result = await remoteAgents.json(descriptor, "/list", {
+    path: descriptor.path,
+    recursive: "1",
+  });
+  if (result.targetType !== "directory") throw new HttpError(400, "SSH 路径不是目录");
+  const root = result.path || descriptor.path;
+  const rootName = path.posix.basename(root.replace(/\/+$/, "")) || "files";
+  for (const entry of result.entries) {
+    if (entry.type === "directory") continue;
+    const response = await remoteAgents.fetch(descriptor, "/file", {
+      path: entry.path,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new HttpError(response.status, body.error || "SSH 文件读取失败");
+    }
+    yield {
+      name: `${rootName}/${safeZipPath(path.posix.relative(root, entry.path))}`,
+      stream: Readable.fromWeb(response.body),
+      date: Number.isFinite(entry.modified) ? new Date(entry.modified) : undefined,
+    };
+  }
+}
+
+async function* s3DirectoryFiles(descriptor) {
+  const client = getS3Client(descriptor);
+  const prefix = descriptor.key || "";
+  const rootName = path.posix.basename(prefix.replace(/\/+$/, "")) || descriptor.bucket;
+  let continuationToken;
+  do {
+    const listed = await client.send(new ListObjectsV2Command({
+      Bucket: descriptor.bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+      MaxKeys: 1000,
+    }));
+    for (const object of listed.Contents || []) {
+      if (!object.Key || object.Key.endsWith("/")) continue;
+      const result = await client.send(new GetObjectCommand({
+        Bucket: descriptor.bucket,
+        Key: object.Key,
+      }));
+      if (!result.Body) throw new HttpError(502, `对象读取失败：${object.Key}`);
+      yield {
+        name: `${rootName}/${safeZipPath(object.Key.slice(prefix.length))}`,
+        stream: result.Body,
+        date: object.LastModified,
+      };
+    }
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+}
+
+async function* archiveDirectoryFiles(descriptor) {
+  const prefix = normalizeArchiveMember(descriptor.member, true);
+  const { members } = await archiveMembers(descriptor.archive);
+  const rootName = path.posix.basename(prefix.replace(/\/$/, "")) || "files";
+  for (const member of members) {
+    if (member.directory || !member.path.startsWith(prefix)) continue;
+    const memberDescriptor = {
+      kind: "archive",
+      archive: descriptor.archive,
+      member: member.path,
+    };
+    const filePath = await materialize(memberDescriptor);
+    yield {
+      name: `${rootName}/${safeZipPath(member.path.slice(prefix.length))}`,
+      stream: fs.createReadStream(filePath),
+    };
+  }
+}
+
+function addZipEntry(zip, item) {
+  return new Promise((resolve, reject) => {
+    zip.entry(item.stream, {
+      name: item.name,
+      ...(item.date ? { date: item.date } : {}),
+    }, (error) => error ? reject(error) : resolve());
+  });
+}
+
+async function streamDirectoryZip(response, descriptor) {
+  const sourcePath = descriptorSourcePath(descriptor).replace(/\/+$/, "");
+  const baseName = path.posix.basename(sourcePath) || descriptor.bucket || "files";
+  const downloadName = `${baseName.replaceAll('"', "") || "files"}.zip`;
+  response.writeHead(200, {
+    "Content-Type": "application/zip",
+    "Content-Disposition": attachmentDisposition(downloadName),
+    "Cache-Control": "no-store",
+  });
+  const zip = new ZipStream({ level: 6 });
+  zip.pipe(response);
+  const files = descriptor.kind === "local"
+    ? localDirectoryFiles(descriptor)
+    : descriptor.kind === "ssh"
+      ? sshDirectoryFiles(descriptor)
+      : descriptor.kind === "s3"
+        ? s3DirectoryFiles(descriptor)
+        : archiveDirectoryFiles(descriptor);
+  try {
+    for await (const item of files) {
+      if (!item.name || item.name.endsWith("/")) continue;
+      await addZipEntry(zip, item);
+    }
+    zip.finalize();
+    await once(response, "finish");
+  } catch (error) {
+    zip.destroy(error);
+    response.destroy(error);
+  }
 }
 
 function singleJob(key, task) {
@@ -1266,8 +1617,9 @@ async function proxyS3File(request, response, descriptor, download = false) {
   }
   if (result.ContentRange) headers["Content-Range"] = result.ContentRange;
   if (download) {
-    headers["Content-Disposition"] =
-      `attachment; filename="${path.posix.basename(descriptor.key).replaceAll('"', "")}"`;
+    headers["Content-Disposition"] = attachmentDisposition(
+      path.posix.basename(descriptor.key),
+    );
   }
   response.writeHead(status, headers);
   await pipeline(result.Body, response);
@@ -1293,6 +1645,12 @@ function contentTypeFor(filePath) {
     ".pdf": "application/pdf",
     ".html": "text/html; charset=utf-8",
     ".xml": "application/xml; charset=utf-8",
+    ".zip": "application/zip",
+    ".tar": "application/x-tar",
+    ".gz": "application/gzip",
+    ".tgz": "application/gzip",
+    ".bz2": "application/x-bzip2",
+    ".xz": "application/x-xz",
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
@@ -1354,6 +1712,12 @@ function htmlRenderDescriptor(documentDescriptor, requestedPath) {
       throw new HttpError(403, "HTML 资源不能访问页面目录之外的文件");
     }
     descriptor.path = target;
+    return descriptor;
+  }
+
+  if (descriptor.kind === "archive") {
+    const root = path.posix.dirname(descriptor.member);
+    descriptor.member = root === "." ? normalized : path.posix.join(root, normalized);
     return descriptor;
   }
 
@@ -1452,6 +1816,42 @@ async function handleRequest(request, response) {
 
   if (url.searchParams.get("token") !== SESSION_TOKEN) {
     throw new HttpError(401, "会话已失效，请刷新插件页面");
+  }
+
+  if (url.pathname === "/api/download-directory" && request.method === "GET") {
+    let descriptor;
+    const archiveId = url.searchParams.get("archiveId");
+    if (archiveId) {
+      descriptor = {
+        kind: "archive",
+        archive: decodeDescriptor(archiveId),
+        member: normalizeArchiveMember(url.searchParams.get("path") || "", true),
+        directory: true,
+      };
+      if (!descriptor.member) throw new HttpError(400, "归档目录路径无效");
+    } else {
+      descriptor = directoryDescriptorForSource(
+        parseSource(url.searchParams.get("source") || ""),
+      );
+    }
+    await streamDirectoryZip(response, descriptor);
+    return;
+  }
+
+  if (url.pathname === "/api/archive/list" && request.method === "GET") {
+    const descriptor = decodeDescriptor(url.searchParams.get("id"));
+    if (!archiveFormatFor(descriptorSourcePath(descriptor))) {
+      throw new HttpError(415, "不支持的归档格式");
+    }
+    const result = await listArchive(
+      descriptor,
+      url.searchParams.get("path") || "",
+    );
+    sendJson(response, 200, {
+      images: result.entries,
+      targetType: result.targetType,
+    });
+    return;
   }
 
   if (url.pathname === "/api/html-render-session" && request.method === "GET") {
@@ -1660,8 +2060,9 @@ async function handleRequest(request, response) {
         true,
         download
           ? {
-            "Content-Disposition":
-              `attachment; filename="${descriptorFileName(descriptor)}"`,
+            "Content-Disposition": attachmentDisposition(
+              descriptorFileName(descriptor),
+            ),
           }
           : { "X-File-Cache": descriptor.kind === "local" ? "LOCAL" : "HIT" },
         request.headers.range,
@@ -1683,7 +2084,11 @@ async function handleRequest(request, response) {
       contentTypeFor(filePath),
       false,
       download
-        ? { "Content-Disposition": `attachment; filename="${path.basename(filePath).replaceAll('"', "")}"` }
+        ? {
+          "Content-Disposition": attachmentDisposition(
+            descriptorFileName(descriptor),
+          ),
+        }
         : {},
       request.headers.range,
     );

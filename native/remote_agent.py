@@ -9,7 +9,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 try:
     from PIL import Image, ImageOps
@@ -194,7 +194,13 @@ class Handler(BaseHTTPRequestHandler):
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{stat.st_size}")
         if download:
-            self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+            name = os.path.basename(file_path).replace('"', "")
+            fallback = "".join(char if 32 <= ord(char) < 127 else "_" for char in name)
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{fallback or "download"}"; '
+                f"filename*=UTF-8''{quote(name)}",
+            )
         self.end_headers()
         with open(file_path, "rb") as source:
             source.seek(start)

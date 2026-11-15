@@ -11,6 +11,7 @@ const RUNTIME_PACKAGE = {
     "@aws-sdk/client-s3": "^3.940.0",
     "@aws-sdk/credential-providers": "^3.940.0",
     sharp: "^0.35.5",
+    "zip-stream": "^7.0.5",
   },
 };
 
