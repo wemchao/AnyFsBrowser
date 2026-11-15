@@ -1,8 +1,8 @@
 {
-  "name": "multifunction-file-browser",
+  "name": "anyfs-viewer",
   "version": "0.1.0",
   "private": true,
-  "description": "Local, SSH and S3 file browser with tiled huge-image viewing",
+  "description": "AnyFS Viewer for local, SSH, S3 and OSS files",
   "scripts": {
     "start": "node native/server.js",
     "dev": "IMAGE_VIEWER_PORT=39281 node --watch native/server.js",

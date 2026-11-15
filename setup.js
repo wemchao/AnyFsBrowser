@@ -8,7 +8,7 @@ const openButton = document.querySelector("#openButton");
 const copyNotice = document.querySelector("#copyNotice");
 const INSTALL_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/wemchao/" +
-  "multifunction-file-browser/main/scripts/install-online-macos.sh | bash";
+  "AnyFSViewer/main/scripts/install-online-macos.sh | bash";
 
 function setStatus(type, title, message) {
   statusPanel.className = `status-panel ${type}`;

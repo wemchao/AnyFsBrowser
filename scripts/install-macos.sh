@@ -6,7 +6,7 @@ NODE="$(command -v node)"
 NPM="$(command -v npm)"
 HOST_NAME="com.wemchao.file_browser"
 EXTENSION_ID="bbdpmlabgaoebjojgmgglldcnlllgjjd"
-SUPPORT_DIR="$HOME/Library/Application Support/File Browser"
+SUPPORT_DIR="$HOME/Library/Application Support/AnyFS Viewer"
 LAUNCHER="$SUPPORT_DIR/native-host"
 
 echo "安装依赖…"
@@ -31,7 +31,7 @@ do
   cat > "$BROWSER_DIR/$HOST_NAME.json" <<MANIFEST
 {
   "name": "$HOST_NAME",
-  "description": "多功能文件浏览器的本地、SSH、S3 和大图处理能力",
+  "description": "AnyFS Viewer 的本地、SSH、S3 和大图处理能力",
   "path": "$LAUNCHER",
   "type": "stdio",
   "allowed_origins": [

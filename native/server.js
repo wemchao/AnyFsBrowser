@@ -1354,7 +1354,7 @@ async function handleRequest(request, response) {
   if (url.pathname === "/api/session") {
     if (request.method !== "GET") throw new HttpError(405, "只支持 GET 请求");
     if (!isTrustedAppRequest(request) && process.env.IMAGE_VIEWER_DEV !== "1") {
-      throw new HttpError(403, "只允许多功能文件浏览器连接");
+      throw new HttpError(403, "只允许 AnyFS Viewer 连接");
     }
     sendJson(response, 200, { token: SESSION_TOKEN, version: "0.1.0" });
     return;
@@ -1635,9 +1635,9 @@ async function main() {
     if (NATIVE_MODE) {
       setupNativeChannel(server);
       sendNativeMessage({ type: "ready", port: PORT, token: SESSION_TOKEN });
-      process.stderr.write(`File Browser native host listening on ${PORT}\n`);
+      process.stderr.write(`AnyFS Viewer native host listening on ${PORT}\n`);
     } else {
-      console.log(`多功能文件浏览器开发服务已启动：http://files.localhost:${PORT}`);
+      console.log(`AnyFS Viewer 开发服务已启动：http://files.localhost:${PORT}`);
       console.log(`缓存目录：${CACHE_ROOT}`);
     }
   });

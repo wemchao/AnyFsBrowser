@@ -2,7 +2,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const RUNTIME_PACKAGE = {
-  name: "multifunction-file-browser-runtime",
+  name: "anyfs-viewer-runtime",
   version: "0.1.0",
   private: true,
   description: "Native runtime for multifunction file browser",
@@ -14,7 +14,7 @@ const RUNTIME_PACKAGE = {
   },
 };
 
-const README = `# 多功能文件浏览器（轻量发布版）
+const README = `# AnyFS Viewer（轻量发布版）
 
 这个目录包含完整功能：
 
@@ -56,7 +56,7 @@ SSH 使用系统 \`~/.ssh/config\`、密钥和 ssh-agent。S3/OSS 默认读取 \
 
 async function main() {
   const root = path.resolve(__dirname, "..");
-  const destination = path.resolve(root, "..", "multifunction-file-browser-lite");
+  const destination = path.resolve(root, "..", "AnyFSViewer-lite");
 
   await fs.rm(destination, { recursive: true, force: true });
   await fs.mkdir(destination, { recursive: true });
