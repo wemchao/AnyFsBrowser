@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>多功能文件浏览器</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/vendor/code-highlight.css">
+    <link rel="stylesheet" href="/vendor/katex.min.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="homeButton" class="brand" type="button" aria-label="返回首页">
+        <span class="brand-mark">H</span>
+        <span>多功能文件浏览器</span>
+      </button>
+      <div id="locationBar" class="location-bar hidden">
+        <button id="backButton" class="icon-button" type="button" title="返回">←</button>
+        <div class="location-info">
+          <form id="pathJumpForm" class="path-jump-form">
+            <input id="sourcePath" type="text"
+              placeholder="/path、user@host:/path 或 s3://bucket/path"
+              aria-label="直接跳转到路径" spellcheck="false" autocomplete="off">
+            <button type="submit" title="跳转到路径">前往</button>
+          </form>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="serverStatus" class="status pending">正在启动本地能力…</span>
+        <button id="refreshButton" class="secondary hidden" type="button">刷新</button>
+        <button id="settingsButton" class="icon-button" type="button" title="插件设置" aria-label="插件设置">⚙</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="homeView" class="home-view">
+        <div class="hero">
+          <p class="eyebrow">LOCAL · SSH · S3 · 都能逛</p>
+          <h1>文件住哪儿不重要，点开就算到家。</h1>
+          <p class="hero-copy">本地硬盘、SSH、S3/MinIO 一锅端；常用路径收藏起来，下次少打几个字。</p>
+        </div>
+
+        <form id="sourceForm" class="source-form">
+          <div class="source-types" role="tablist" aria-label="来源类型">
+            <button class="source-type active" data-type="local" type="button">⌂ 本地目录</button>
+            <button class="source-type" data-type="ssh" type="button">SSH 主机</button>
+            <button class="source-type" data-type="s3" type="button">S3 / MinIO</button>
+          </div>
+          <div id="s3ConfigFields" class="s3-config hidden">
+            <div class="credentials-file-row">
+              <div>
+                <strong>默认读取 ~/.aws/credentials</strong>
+                <span>自动列出文件中的 Profile；点击连接后选择 Bucket。</span>
+              </div>
+              <button id="refreshS3NodesButton" class="secondary" type="button">刷新节点</button>
+              <button id="editCredentialsButton" class="secondary" type="button">配置凭证文件</button>
+            </div>
+            <label class="manual-config-toggle">
+              <input id="s3ManualCredentials" type="checkbox">
+              <span>改用插件内单独保存的 AK/SK（高级）</span>
+            </label>
+            <div id="s3ManualConfigFields" class="hidden">
+              <div class="config-heading">
+                <strong>独立 S3 连接配置</strong>
+                <div>
+                  <select id="s3SavedConfig" title="已保存的 S3 配置">
+                    <option value="">新建配置</option>
+                  </select>
+                  <button id="saveS3ConfigButton" class="secondary" type="button">保存连接</button>
+                </div>
+              </div>
+              <div class="config-grid">
+                <label>
+                  <span>配置名称</span>
+                  <input id="s3ConfigName" type="text" placeholder="例如：公司 MinIO">
+                </label>
+                <label class="wide">
+                  <span>Endpoint URL</span>
+                  <input id="s3Endpoint" type="url" placeholder="https://s3.amazonaws.com 或 http://minio:9000">
+                </label>
+                <label>
+                  <span>Access Key (AK)</span>
+                  <input id="s3AccessKey" type="text" autocomplete="off" spellcheck="false">
+                </label>
+                <label>
+                  <span>Secret Key (SK)</span>
+                  <input id="s3SecretKey" type="password" autocomplete="new-password">
+                </label>
+                <label>
+                  <span>Region</span>
+                  <input id="s3Region" type="text" value="us-east-1" spellcheck="false">
+                </label>
+                <label class="config-check">
+                  <input id="s3PathStyle" type="checkbox" checked>
+                  <span>Path Style（MinIO 通常需要）</span>
+                </label>
+              </div>
+              <p>AK/SK 保存在当前浏览器扩展的本地存储中，不会出现在收藏链接或地址栏。</p>
+            </div>
+            <div class="s3-nodes-heading">
+              <strong>已配置的 S3 节点</strong>
+              <span>点击连接查看 Bucket</span>
+            </div>
+            <div id="s3Nodes" class="s3-nodes"></div>
+            <div id="s3NodesEmpty" class="s3-nodes-empty hidden">
+              还没有可用配置，请先编辑 ~/.aws/credentials 或保存独立连接。
+            </div>
+          </div>
+          <div id="pathInputFields">
+            <label for="sourceInput">目录路径</label>
+            <div class="source-row">
+              <input id="sourceInput" name="source" type="text"
+                placeholder="/Users/me/data 或 user@host:~"
+                spellcheck="false" autocomplete="off" required>
+              <button id="saveSourceButton" class="secondary" type="button">加入收藏</button>
+              <button id="openButton" class="primary" type="submit">打开</button>
+            </div>
+            <div class="form-options">
+              <span>SSH 支持 <code>user@host:~</code> 和配置别名（读取 ~/.ssh/config）</span>
+            </div>
+          </div>
+          <p id="formError" class="form-error" role="alert"></p>
+        </form>
+
+        <section class="favorites-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">FAVORITES</p>
+              <h2>收藏路径</h2>
+            </div>
+            <span id="favoriteCount"></span>
+          </div>
+          <div id="favorites" class="favorites"></div>
+          <div id="favoritesEmpty" class="empty-state">
+            <div class="empty-icon">☆</div>
+            <strong>还没有收藏路径</strong>
+            <span>打开一个目录后，将它加入收藏。</span>
+          </div>
+        </section>
+      </section>
+
+      <section id="galleryView" class="gallery-view hidden">
+        <aside class="directory-panel">
+          <div class="directory-panel-heading">
+            <span>目录</span>
+            <button id="directoryUpButton" class="directory-tool-button" type="button" title="返回上一级">↑</button>
+          </div>
+          <div id="directoryTree" class="directory-tree"></div>
+          <div id="directoryEmpty" class="directory-empty hidden">目录为空</div>
+        </aside>
+        <div id="sidebarResizer" class="sidebar-resizer" role="separator"
+          aria-label="调整目录栏宽度" aria-orientation="vertical" tabindex="0"></div>
+        <div class="file-workspace">
+          <div class="gallery-toolbar">
+            <div class="gallery-summary">
+              <h1 id="galleryTitle">文件</h1>
+              <span id="imageCount"></span>
+            </div>
+            <div class="toolbar-actions">
+              <input id="searchInput" class="search" type="search"
+                placeholder="搜索文件，或输入 S3/OSS 链接">
+              <label class="thumbnail-size-control" title="调整缩略图大小">
+                <span class="thumbnail-size-icon small" aria-hidden="true">▦</span>
+                <input id="thumbnailSize" type="range" min="140" max="420" step="20"
+                  value="220" aria-label="调整缩略图大小">
+                <span class="thumbnail-size-icon large" aria-hidden="true">▣</span>
+              </label>
+              <button id="favoriteButton" class="secondary" type="button">☆ 收藏路径</button>
+            </div>
+          </div>
+          <div id="galleryLoading" class="loading-state">
+            <div class="spinner"></div>
+            <span>正在读取目录…</span>
+          </div>
+          <div id="galleryEmpty" class="empty-state hidden">
+            <div class="empty-icon">◫</div>
+            <strong>这个目录没有文件</strong>
+            <span>可以从左侧继续进入子目录。</span>
+          </div>
+          <div id="galleryGrid" class="gallery-grid"></div>
+        </div>
+      </section>
+
+      <section id="fileView" class="file-view hidden">
+        <div class="file-view-toolbar">
+          <button id="closeFileButton" class="secondary" type="button">← 返回目录</button>
+          <button id="fileHomeButton" class="secondary" type="button">⌂ 返回主页</button>
+          <strong id="fileViewName"></strong>
+          <span id="fileFormatBadge" class="file-format-badge hidden"></span>
+          <div id="markdownLayoutControls" class="markdown-layout-controls hidden">
+            <button id="markdownLayoutWide" type="button" title="宽屏阅读">宽屏</button>
+            <button id="markdownLayoutReading" type="button" title="居中阅读">阅读模式</button>
+          </div>
+          <a id="downloadFileButton" class="secondary" target="_blank" rel="noopener">在新标签页打开</a>
+        </div>
+        <div id="formattedFilePreview" class="formatted-file-preview hidden">
+          <div id="formattedFileLoading" class="formatted-file-status">
+            <div class="spinner"></div>
+            <span>正在排版文件…</span>
+          </div>
+          <article id="markdownPreview" class="markdown-preview hidden"></article>
+          <pre id="jsonPreview" class="json-preview hidden"><code></code></pre>
+          <div id="codePreview" class="code-preview hidden">
+            <pre id="codeLineNumbers" class="code-line-numbers" aria-hidden="true"></pre>
+            <pre class="code-source"><code></code></pre>
+          </div>
+          <div id="officePreview" class="office-preview hidden"></div>
+          <div id="videoPreview" class="video-preview hidden">
+            <video id="videoPlayer" controls preload="metadata" playsinline></video>
+          </div>
+          <div id="formattedFileError" class="formatted-file-error hidden"></div>
+        </div>
+        <iframe id="fileFrame" title="文件预览"></iframe>
+      </section>
+
+      <section id="viewerView" class="viewer-view hidden">
+        <div id="viewer" class="viewer"></div>
+        <div class="viewer-top">
+          <button id="closeViewerButton" class="glass-button" type="button">← 返回文件列表</button>
+          <button id="viewerHomeButton" class="glass-button" type="button">⌂ 返回主页</button>
+          <div class="viewer-title">
+            <strong id="viewerName"></strong>
+            <span id="viewerMeta"></span>
+          </div>
+          <button id="fitButton" class="glass-button" type="button">适应窗口</button>
+          <button id="actualButton" class="glass-button" type="button">100%</button>
+          <a id="downloadOriginalButton" class="glass-button" download>下载原图</a>
+        </div>
+        <div id="viewerNotice" class="viewer-notice hidden">
+          当前为缩放预览，原始分块准备完成后会自动切换。
+        </div>
+        <button id="previousButton" class="nav-button previous" type="button" aria-label="上一张">‹</button>
+        <button id="nextButton" class="nav-button next" type="button" aria-label="下一张">›</button>
+        <div id="viewerLoading" class="viewer-loading">
+          <div class="spinner"></div>
+          <span id="viewerLoadingText">正在生成缩放预览…</span>
+        </div>
+        <div id="viewerError" class="viewer-error hidden"></div>
+      </section>
+    </main>
+
+    <dialog id="credentialsDialog" class="credentials-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <h2>配置 AWS / OSS 凭证</h2>
+            <span id="credentialsPath">~/.aws/credentials</span>
+          </div>
+          <button value="cancel" class="icon-button" type="submit">×</button>
+        </div>
+        <textarea id="credentialsContent" spellcheck="false" aria-label="AWS credentials 内容"></textarea>
+        <div class="dialog-actions">
+          <span>保存时文件权限会设置为 600。</span>
+          <button value="cancel" class="secondary" type="submit">取消</button>
+          <button id="saveCredentialsButton" value="default" class="primary" type="button">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script src="/vendor/openseadragon.min.js"></script>
+    <script src="/vendor/markdown-it.min.js"></script>
+    <script src="/vendor/code-highlighter.min.js"></script>
+    <script src="/vendor/mammoth.min.js"></script>
+    <script src="/vendor/jszip.min.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

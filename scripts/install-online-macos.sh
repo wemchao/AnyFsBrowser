@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPOSITORY="wemchao/multifunction-file-browser"
+ASSET_URL="https://github.com/$REPOSITORY/releases/latest/download/multifunction-file-browser-lite.zip"
+SUPPORT_DIR="$HOME/Library/Application Support/File Browser"
+INSTALL_DIR="$SUPPORT_DIR/app"
+TEMP_DIR="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "需要先安装 Node.js 20 或更高版本：https://nodejs.org/" >&2
+  exit 1
+fi
+
+NODE_MAJOR="$(node -p "Number(process.versions.node.split('.')[0])")"
+if (( NODE_MAJOR < 20 )); then
+  echo "当前 Node.js 版本过低，需要 Node.js 20 或更高版本。" >&2
+  exit 1
+fi
+
+echo "正在从 GitHub 下载多功能文件浏览器…"
+curl --fail --location --silent --show-error \
+  --retry 3 \
+  "$ASSET_URL" \
+  --output "$TEMP_DIR/release.zip"
+unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/release"
+
+SOURCE_DIR="$TEMP_DIR/release/multifunction-file-browser-lite"
+if [[ ! -f "$SOURCE_DIR/install-macos.sh" ]]; then
+  echo "安装包内容不完整。" >&2
+  exit 1
+fi
+
+mkdir -p "$SUPPORT_DIR"
+NEXT_DIR="$SUPPORT_DIR/app.next.$$"
+rm -rf "$NEXT_DIR"
+cp -R "$SOURCE_DIR" "$NEXT_DIR"
+rm -rf "$INSTALL_DIR"
+mv "$NEXT_DIR" "$INSTALL_DIR"
+
+echo "正在安装本地能力…"
+bash "$INSTALL_DIR/install-macos.sh"
+
+echo
+echo "安装完成。回到扩展安装引导页，点击“重新检测”即可。"

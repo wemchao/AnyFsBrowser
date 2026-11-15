@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "多功能文件浏览器",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA91ZDnNIy0wUfCxehYM/BcQbct+ZtCFuEiWNBsvrDlt5W2lxoH27bRj4kHKsZ4aPUzyGz5Us3iuiTy351LBfYsB4gDvpdfgSaCevONuRxFObkYFB4iD+5ocsQYSQkwS3bGY/jh5NymPDf29bhdMVALyozbu4FLNW+DCSfqFIpquQmYxms6A1u34er1onvOtQHvcejxxQD1CnXamvz6sfNCAcf8TMJqzf41Ls8IbC9cxXxo7dV9GGy/o0AUipfmEGvMCNZ7fP86ndjbP7//zjjJ7a86j/1KxJQprbjyYMRrrHJhIGMybxqyqx8hls4AnO4U3A4NjWh53jgycc9JChpTQIDAQAB",
+  "description": "浏览本地、SSH 和 S3/MinIO 文件，支持超大图片流畅缩放。",
+  "permissions": [
+    "storage",
+    "nativeMessaging",
+    "alarms",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_title": "打开多功能文件浏览器"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "all_frames": true,
+      "js": [
+        "object-storage-links.js"
+      ],
+      "css": [
+        "object-storage-links.css"
+      ],
+      "run_at": "document_idle",
+      "match_origin_as_fallback": true
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

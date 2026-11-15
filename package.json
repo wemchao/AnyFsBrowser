@@ -1,0 +1,33 @@
+{
+  "name": "multifunction-file-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local, SSH and S3 file browser with tiled huge-image viewing",
+  "scripts": {
+    "start": "node native/server.js",
+    "dev": "IMAGE_VIEWER_PORT=39281 node --watch native/server.js",
+    "prepare:extension": "node scripts/prepare-extension.js",
+    "build:extension": "npm run prepare:extension && node scripts/build-extension.js",
+    "build:lite": "npm run build:extension && node scripts/build-lite-release.js",
+    "test": "node --check native/server.js && node --check native/remote-agent.js && node --check app.js && node --check options.js && node --check setup.js && node --check background.js && node --check object-storage-links.js && node --check scripts/build-extension.js && node --check scripts/build-lite-release.js && python3 -c \"import ast; ast.parse(open('native/remote_agent.py').read())\""
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.940.0",
+    "@aws-sdk/credential-providers": "^3.940.0",
+    "highlight.js": "^11.12.0",
+    "jszip": "^3.10.2",
+    "katex": "^0.19.1",
+    "mammoth": "^1.13.0",
+    "markdown-it": "^14.3.3",
+    "markdown-it-texmath": "^1.0.0",
+    "mermaid": "^12.3.0",
+    "openseadragon": "^5.0.1",
+    "sharp": "^0.35.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

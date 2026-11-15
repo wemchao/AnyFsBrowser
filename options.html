@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>多功能文件浏览器 · 设置</title>
+    <link rel="stylesheet" href="/options.css">
+  </head>
+  <body>
+    <div class="settings-shell">
+      <aside class="settings-sidebar">
+        <div class="settings-brand">
+          <span>H</span>
+          <strong>多功能文件浏览器</strong>
+        </div>
+        <nav aria-label="设置分类">
+          <button class="settings-nav-item active" type="button">
+            <span>⚙</span>
+            <strong>通用</strong>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="settings-content">
+        <header>
+          <h1>通用设置</h1>
+          <p>设置会自动保存，并应用到所有插件窗口。</p>
+        </header>
+
+        <section class="settings-section">
+          <div class="section-title">
+            <h2>文件管理器界面</h2>
+            <p>选择一种固定风格，不在浏览页面提供临时切换。</p>
+          </div>
+          <div class="style-options">
+            <label class="style-card">
+              <input type="radio" name="interfaceStyle" value="finder">
+              <span class="preview finder-preview">
+                <i class="preview-toolbar"></i>
+                <i class="preview-sidebar"></i>
+                <i class="preview-content"></i>
+              </span>
+              <span class="style-copy">
+                <strong>macOS Finder</strong>
+                <small>圆角面板、柔和层次和紧凑侧边栏</small>
+              </span>
+              <span class="checkmark">✓</span>
+            </label>
+
+            <label class="style-card">
+              <input type="radio" name="interfaceStyle" value="windows">
+              <span class="preview windows-preview">
+                <i class="preview-toolbar"></i>
+                <i class="preview-sidebar"></i>
+                <i class="preview-content"></i>
+              </span>
+              <span class="style-copy">
+                <strong>Windows Explorer</strong>
+                <small>直角布局、清晰分隔和蓝色选中状态</small>
+              </span>
+              <span class="checkmark">✓</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section markdown-settings-section">
+          <div class="section-title">
+            <h2>Markdown 默认版式</h2>
+            <p>文档打开时采用此版式；预览页上的临时切换不会修改这里。</p>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>默认阅读宽度</strong>
+              <span>宽屏铺满内容区，阅读模式使用更舒适的居中宽度</span>
+            </div>
+            <div class="layout-setting">
+              <label>
+                <input type="radio" name="markdownDefaultLayout" value="wide">
+                <span>宽屏</span>
+              </label>
+              <label>
+                <input type="radio" name="markdownDefaultLayout" value="reading">
+                <span>阅读模式</span>
+              </label>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div id="savedNotice" class="saved-notice">设置已保存</div>
+    <script src="/options.js"></script>
+  </body>
+</html>

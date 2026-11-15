@@ -1,0 +1,187 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #090b0f;
+  color: #f3f6fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  padding: 48px 24px;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(124, 156, 255, 0.2), transparent 30rem),
+    #090b0f;
+}
+
+.setup-card {
+  width: min(680px, 100%);
+  padding: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: #11151c;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.32);
+}
+
+.brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #7c9cff, #55e6c1);
+  color: #091017;
+  font-weight: 800;
+}
+
+.eyebrow {
+  margin: 26px 0 8px;
+  color: #7c9cff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 14px;
+  font-size: 32px;
+}
+
+.intro,
+.hint,
+.status-panel p {
+  color: #9ba5b5;
+  line-height: 1.65;
+}
+
+.status-panel {
+  margin: 28px 0;
+  padding: 18px;
+  display: flex;
+  gap: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: #0c0f14;
+}
+
+.status-panel p {
+  margin: 5px 0 0;
+}
+
+.status-dot {
+  width: 11px;
+  height: 11px;
+  margin-top: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #f4b860;
+  box-shadow: 0 0 0 5px rgba(244, 184, 96, 0.12);
+}
+
+.status-panel.ready .status-dot {
+  background: #55e6c1;
+  box-shadow: 0 0 0 5px rgba(85, 230, 193, 0.12);
+}
+
+.status-panel.missing .status-dot {
+  background: #ff7c88;
+  box-shadow: 0 0 0 5px rgba(255, 124, 136, 0.12);
+}
+
+.install-steps {
+  padding: 22px;
+  border-radius: 12px;
+  background: #171c24;
+}
+
+.install-steps h2 {
+  font-size: 17px;
+}
+
+.install-steps li {
+  margin: 9px 0;
+  color: #c7ced9;
+}
+
+.command-row {
+  padding: 10px 10px 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: #090b0f;
+}
+
+.command-row code {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.command-row button {
+  flex: 0 0 auto;
+}
+
+code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+button {
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.primary {
+  background: #7c9cff;
+  color: #08101f;
+}
+
+.secondary,
+#copyCommand {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #202733;
+}
+
+.actions {
+  margin-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.hint,
+.copy-notice {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+.copy-notice {
+  min-height: 20px;
+  color: #55e6c1;
+  text-align: right;
+}
