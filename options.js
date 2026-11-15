@@ -144,11 +144,7 @@ homeButton.addEventListener("click", () => {
 
 backButton.addEventListener("click", () => {
   if (history.length > 1) history.back();
-  else {
-    location.href = globalThis.chrome?.runtime?.getURL
-      ? chrome.runtime.getURL("app.html")
-      : "/";
-  }
+  else window.close();
 });
 
 init();

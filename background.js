@@ -4,6 +4,8 @@ chrome.action.onClicked.addListener(async () => {
 });
 
 const COPY_IMAGE_MENU_ID = "anyfs-copy-image";
+const COPY_IMAGE_PATH_MENU_ID = "anyfs-copy-image-path";
+const DOWNLOAD_IMAGE_MENU_ID = "anyfs-download-image";
 const appPagePorts = new Map();
 
 function setupImageContextMenu() {
@@ -12,6 +14,18 @@ function setupImageContextMenu() {
     chrome.contextMenus.create({
       id: COPY_IMAGE_MENU_ID,
       title: "复制图像（AnyFs Browser）",
+      contexts: ["page", "image"],
+      documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
+    });
+    chrome.contextMenus.create({
+      id: COPY_IMAGE_PATH_MENU_ID,
+      title: "复制图片路径（AnyFs Browser）",
+      contexts: ["page", "image"],
+      documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
+    });
+    chrome.contextMenus.create({
+      id: DOWNLOAD_IMAGE_MENU_ID,
+      title: "下载原图（AnyFs Browser）",
       contexts: ["page", "image"],
       documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
     });
@@ -38,9 +52,16 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== COPY_IMAGE_MENU_ID || !tab?.id) return;
+  if (!tab?.id) return;
+  const types = {
+    [COPY_IMAGE_MENU_ID]: "copyImageFromContextMenu",
+    [COPY_IMAGE_PATH_MENU_ID]: "copyImagePathFromContextMenu",
+    [DOWNLOAD_IMAGE_MENU_ID]: "downloadImageFromContextMenu",
+  };
+  const type = types[info.menuItemId];
+  if (!type) return;
   appPagePorts.get(tab.id)?.postMessage({
-    type: "copyImageFromContextMenu",
+    type,
     srcUrl: info.srcUrl || "",
   });
 });

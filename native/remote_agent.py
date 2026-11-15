@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -338,6 +339,27 @@ class Handler(BaseHTTPRequestHandler):
         if query is None:
             return
         try:
+            if parsed.path == "/delete":
+                target = expand_path(query["path"][0])
+                protected = {
+                    os.path.abspath(os.sep),
+                    os.path.abspath(os.path.expanduser("~")),
+                }
+                if os.path.abspath(target) in protected:
+                    self.send_json(403, {"error": "refusing to delete a protected directory"})
+                    return
+                if not os.path.lexists(target):
+                    self.send_json(200, {"ok": True, "path": target, "alreadyMissing": True})
+                    return
+                if os.path.isdir(target) and not os.path.islink(target):
+                    if query.get("directory", ["0"])[0] != "1":
+                        self.send_json(400, {"error": "directory flag is required"})
+                        return
+                    shutil.rmtree(target)
+                else:
+                    os.unlink(target)
+                self.send_json(200, {"ok": True, "path": target})
+                return
             if parsed.path != "/rename":
                 self.send_json(404, {"error": "not found"})
                 return

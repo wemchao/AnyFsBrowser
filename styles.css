@@ -820,6 +820,31 @@ code {
   color: #effffb;
 }
 
+.directory-row.multi-selected {
+  background: rgba(124, 156, 255, 0.22);
+  color: #f4f6ff;
+}
+
+.directory-selection-checkbox {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  margin: 0 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.directory-row:hover .directory-selection-checkbox,
+.directory-row.multi-selected .directory-selection-checkbox,
+.directory-selection-checkbox:focus-visible {
+  opacity: 1;
+}
+
+.directory-selection-checkbox.root-selection-checkbox {
+  visibility: hidden;
+}
+
 .directory-toggle {
   width: 18px;
   height: 24px;
@@ -991,6 +1016,28 @@ body.resizing-sidebar {
   gap: 10px;
 }
 
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.selection-actions > span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.danger-button {
+  border-color: rgba(255, 102, 119, 0.42);
+  background: rgba(122, 32, 44, 0.24);
+  color: #ffb8c1;
+}
+
+.danger-button:hover {
+  background: rgba(157, 39, 54, 0.45);
+}
+
 .upload-actions {
   position: relative;
 }
@@ -1129,6 +1176,11 @@ body.resizing-sidebar {
   transform: translateY(-2px);
 }
 
+.image-card.selected {
+  border-color: rgba(124, 156, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(124, 156, 255, 0.22);
+}
+
 .image-preview {
   position: relative;
   aspect-ratio: 6 / 5;
@@ -1145,7 +1197,8 @@ body.resizing-sidebar {
   background-position: 0 0, 0 10px, 10px -10px, -10px 0;
 }
 
-.entry-download-button {
+.entry-download-button,
+.entry-copy-path-button {
   position: absolute;
   top: 9px;
   right: 9px;
@@ -1163,12 +1216,37 @@ body.resizing-sidebar {
   transition: opacity 120ms, background 120ms;
 }
 
+.entry-copy-path-button {
+  right: 47px;
+  font-size: 14px;
+}
+
+.entry-selection-checkbox {
+  position: absolute;
+  z-index: 3;
+  top: 11px;
+  left: 11px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
 .image-card:hover .entry-download-button,
-.entry-download-button:focus-visible {
+.image-card:hover .entry-copy-path-button,
+.image-card:hover .entry-selection-checkbox,
+.image-card.selected .entry-selection-checkbox,
+.entry-download-button:focus-visible,
+.entry-copy-path-button:focus-visible,
+.entry-selection-checkbox:focus-visible {
   opacity: 1;
 }
 
-.entry-download-button:hover {
+.entry-download-button:hover,
+.entry-copy-path-button:hover {
   background: rgba(75, 104, 190, 0.92);
 }
 

@@ -49,6 +49,8 @@ const state = {
   filePreviewController: null,
   uploadInProgress: false,
   uploadPickerTarget: null,
+  selectedItems: new Map(),
+  selectionAnchorId: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -104,6 +106,11 @@ const elements = {
   sidebarResizer: $("#sidebarResizer"),
   searchInput: $("#searchInput"),
   thumbnailSize: $("#thumbnailSize"),
+  selectionActions: $("#selectionActions"),
+  selectionCount: $("#selectionCount"),
+  copySelectedPathsButton: $("#copySelectedPathsButton"),
+  deleteSelectedButton: $("#deleteSelectedButton"),
+  clearSelectionButton: $("#clearSelectionButton"),
   uploadActions: $("#uploadActions"),
   uploadButton: $("#uploadButton"),
   uploadMenu: $("#uploadMenu"),
@@ -154,8 +161,6 @@ const elements = {
   nextButton: $("#nextButton"),
   fitButton: $("#fitButton"),
   actualButton: $("#actualButton"),
-  copyViewerImageButton: $("#copyViewerImageButton"),
-  downloadOriginalButton: $("#downloadOriginalButton"),
   viewerName: $("#viewerName"),
   viewerMeta: $("#viewerMeta"),
   viewerNotice: $("#viewerNotice"),
@@ -466,8 +471,7 @@ function copyPathValue(value) {
   return match ? match[1] : normalized;
 }
 
-async function copyPath(value, type) {
-  const text = copyPathValue(value);
+async function writeClipboardText(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -480,7 +484,145 @@ async function copyPath(value, type) {
     document.execCommand("copy");
     input.remove();
   }
+}
+
+async function copyPath(value, type) {
+  await writeClipboardText(copyPathValue(value));
   showToast(`已复制${type}路径`);
+}
+
+function selectionItemForEntry(entry, node) {
+  return {
+    id: entry.id,
+    name: entry.name || entry.relativePath,
+    path: entryPathForCopy(entry),
+    entry,
+    node,
+    directory: false,
+  };
+}
+
+function selectionItemForNode(node) {
+  if (!node?.id) return null;
+  return {
+    id: node.id,
+    name: node.name || node.source,
+    path: copyPathValue(node.source),
+    node,
+    directory: true,
+  };
+}
+
+function syncSelectionUI() {
+  const count = state.selectedItems.size;
+  elements.selectionActions.classList.toggle("hidden", count === 0);
+  elements.selectionCount.textContent = `已选择 ${count} 项`;
+  document.querySelectorAll("[data-selection-id]").forEach((element) => {
+    const selected = state.selectedItems.has(element.dataset.selectionId);
+    if (element.classList.contains("image-card")) {
+      element.classList.toggle("selected", selected);
+    } else if (element.classList.contains("directory-row")) {
+      element.classList.toggle("multi-selected", selected);
+    }
+    const checkbox = element.querySelector(".entry-selection-checkbox, .directory-selection-checkbox");
+    if (checkbox) checkbox.checked = selected;
+  });
+}
+
+function clearSelection() {
+  state.selectedItems.clear();
+  state.selectionAnchorId = null;
+  syncSelectionUI();
+}
+
+function selectOnlyItem(item) {
+  if (!item) return;
+  state.selectedItems.clear();
+  state.selectedItems.set(item.id, item);
+  state.selectionAnchorId = item.id;
+  syncSelectionUI();
+}
+
+function toggleSelectedItem(item) {
+  if (!item) return;
+  if (state.selectedItems.has(item.id)) state.selectedItems.delete(item.id);
+  else state.selectedItems.set(item.id, item);
+  state.selectionAnchorId = item.id;
+  syncSelectionUI();
+}
+
+function selectItemRange(items, target, additive = false) {
+  const anchor = items.findIndex((item) => item.id === state.selectionAnchorId);
+  const current = items.findIndex((item) => item.id === target.id);
+  if (anchor < 0 || current < 0) {
+    selectOnlyItem(target);
+    return;
+  }
+  if (!additive) state.selectedItems.clear();
+  const [start, end] = anchor < current ? [anchor, current] : [current, anchor];
+  items.slice(start, end + 1).forEach((item) => state.selectedItems.set(item.id, item));
+  syncSelectionUI();
+}
+
+async function copySelectedPaths() {
+  const paths = [...state.selectedItems.values()].map((item) => item.path);
+  if (!paths.length) return;
+  await writeClipboardText(paths.join("\n"));
+  showToast(`已复制 ${paths.length} 个路径`);
+}
+
+function nodeContainsNode(parent, child) {
+  for (let current = child; current; current = current.parent) {
+    if (current === parent) return true;
+  }
+  return false;
+}
+
+async function deleteSelectedItems() {
+  const items = [...state.selectedItems.values()];
+  if (!items.length) return;
+  const names = items.slice(0, 4).map((item) => item.name).join("、");
+  const suffix = items.length > 4 ? ` 等 ${items.length} 项` : "";
+  if (!confirm(`确定删除“${names}${suffix}”吗？`)) return;
+  if (!confirm("删除后无法恢复。请再次确认永久删除所选文件或目录。")) return;
+
+  const deletedCurrentNode = items.find(
+    (item) => item.directory && nodeContainsNode(item.node, state.selectedDirectory),
+  );
+  const fallbackNode = deletedCurrentNode?.node?.parent || null;
+  elements.deleteSelectedButton.disabled = true;
+  elements.deleteSelectedButton.textContent = "删除中…";
+  try {
+    const result = { deleted: [], failed: [] };
+    const ids = items.map((item) => item.id);
+    for (let index = 0; index < ids.length; index += 50) {
+      const batch = await apiPost("/api/entries/delete", {
+        ids: ids.slice(index, index + 50),
+      });
+      result.deleted.push(...(batch.deleted || []));
+      result.failed.push(...(batch.failed || []));
+    }
+    clearSelection();
+    if (fallbackNode) {
+      await loadDirectoryNode(fallbackNode, true);
+      await selectDirectoryNode(fallbackNode);
+    } else if (state.selectedDirectory) {
+      await refreshCurrentDirectory();
+    }
+    if (result.failed?.length) {
+      showToast(
+        `已删除 ${result.deleted.length} 项，${result.failed.length} 项失败：` +
+        result.failed[0].error,
+      );
+    } else {
+      showToast(`已删除 ${result.deleted.length} 项`);
+    }
+  } catch (error) {
+    showToast(`删除失败：${error.message}`);
+  } finally {
+    elements.deleteSelectedButton.disabled = false;
+    elements.deleteSelectedButton.textContent = "删除";
+  }
 }
 
 function createCopyPathButton(value, type) {
@@ -519,6 +661,20 @@ function createFileDownloadButton(entry) {
       apiUrl("/api/file", { id: entry.id, download: "1" }),
       entry.name || "download",
     );
+  });
+  return button;
+}
+
+function createFileCopyPathButton(entry) {
+  const button = document.createElement("button");
+  button.className = "entry-copy-path-button";
+  button.type = "button";
+  button.textContent = "⧉";
+  button.title = `复制路径：${entryPathForCopy(entry)}`;
+  button.setAttribute("aria-label", `复制 ${entry.name || entry.relativePath} 的路径`);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    copyPath(entryPathForCopy(entry), "文件");
   });
   return button;
 }
@@ -967,13 +1123,9 @@ function findImageEntryById(id) {
   return state.entries.find((entry) => entry.id === id && entry.type === "image") || null;
 }
 
-function copyImageFromContextMenu(srcUrl) {
+function imageFromContextMenu(srcUrl) {
   if (!elements.viewerView.classList.contains("hidden")) {
-    copyImageToClipboard(
-      state.images[state.currentIndex],
-      state.viewerImageUrl,
-    );
-    return;
+    return state.images[state.currentIndex] || null;
   }
   let id = "";
   try {
@@ -981,9 +1133,31 @@ function copyImageFromContextMenu(srcUrl) {
   } catch {
     // The menu may have been opened outside an image element.
   }
-  const entry = findImageEntryById(id);
+  return findImageEntryById(id);
+}
+
+function copyImageFromContextMenu(srcUrl) {
+  const entry = imageFromContextMenu(srcUrl);
   if (entry) copyImageToClipboard(entry);
   else showToast("请在图片上使用“复制图像”");
+}
+
+function copyImagePathFromContextMenu(srcUrl) {
+  const entry = imageFromContextMenu(srcUrl);
+  if (entry) copyPath(entryPathForCopy(entry), "图片");
+  else showToast("请在图片上使用“复制图片路径”");
+}
+
+function downloadImageFromContextMenu(srcUrl) {
+  const entry = imageFromContextMenu(srcUrl);
+  if (!entry) {
+    showToast("请在图片上使用“下载原图”");
+    return;
+  }
+  triggerDownload(
+    apiUrl("/api/file", { id: entry.id, download: "1" }),
+    entry.name || "original-image",
+  );
 }
 
 function connectImageContextMenu() {
@@ -992,6 +1166,10 @@ function connectImageContextMenu() {
   port.onMessage.addListener((message) => {
     if (message?.type === "copyImageFromContextMenu") {
       copyImageFromContextMenu(message.srcUrl || "");
+    } else if (message?.type === "copyImagePathFromContextMenu") {
+      copyImagePathFromContextMenu(message.srcUrl || "");
+    } else if (message?.type === "downloadImageFromContextMenu") {
+      downloadImageFromContextMenu(message.srcUrl || "");
     }
   });
   port.onDisconnect.addListener(() => {
@@ -1002,6 +1180,7 @@ function connectImageContextMenu() {
 function showHome() {
   closeViewer(false);
   closeFileViewer(false);
+  clearSelection();
   state.targetType = "";
   state.directoryRoot = null;
   state.selectedDirectory = null;
@@ -1615,9 +1794,11 @@ function updateDirectoryNode(node, entries) {
       const existing = previous.get(key);
       if (existing) {
         existing.name = entry.name;
+        existing.id = entry.id;
         return existing;
       }
       return {
+        id: entry.id,
         source: entry.childSource || `${node.source}${entry.name}/`,
         name: entry.name,
         parent: node,
@@ -1718,6 +1899,7 @@ async function loadDirectoryNode(node, force = false) {
 }
 
 async function selectDirectoryNode(node) {
+  if (node !== state.selectedDirectory) clearSelection();
   closeViewer(false);
   closeFileViewer(false);
   state.currentTreeFileId = null;
@@ -1906,6 +2088,7 @@ function renderDirectoryTree() {
   if (!root) return;
 
   const fragment = document.createDocumentFragment();
+  const treeSelectionItems = [];
   const openTreeFile = (node, entry) => {
     updateSelectedDirectory(node);
     state.currentTreeFileId = entry.id;
@@ -1920,14 +2103,30 @@ function renderDirectoryTree() {
     }
   };
   const appendFile = (node, entry, depth) => {
+    const selectionItem = selectionItemForEntry(entry, node);
+    treeSelectionItems.push(selectionItem);
+    if (state.selectedItems.has(entry.id)) {
+      state.selectedItems.set(entry.id, selectionItem);
+    }
     const row = document.createElement("div");
     row.className = "directory-row directory-file-row";
+    row.dataset.selectionId = entry.id;
+    row.classList.toggle("multi-selected", state.selectedItems.has(entry.id));
     row.classList.toggle("active-file", entry.id === state.currentTreeFileId);
     row.style.setProperty("--tree-depth", depth);
     row.title = entry.relativePath || entry.name;
 
     const spacer = document.createElement("span");
     spacer.className = "directory-toggle directory-file-spacer";
+    const checkbox = document.createElement("input");
+    checkbox.className = "directory-selection-checkbox";
+    checkbox.type = "checkbox";
+    checkbox.checked = state.selectedItems.has(entry.id);
+    checkbox.setAttribute("aria-label", `选择 ${entry.name || entry.relativePath}`);
+    checkbox.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSelectedItem(selectionItem);
+    });
     const icon = document.createElement("span");
     icon.className = `directory-file-icon ${entry.type}`;
     const extension = entry.name?.split(".").at(-1)?.toLocaleLowerCase();
@@ -1946,14 +2145,33 @@ function renderDirectoryTree() {
     const downloadButton = createFileDownloadButton(entry);
     downloadButton.className = "directory-copy-button";
     const copyButton = createCopyPathButton(entryPathForCopy(entry), "文件");
-    row.append(spacer, icon, label, downloadButton, copyButton);
-    row.addEventListener("click", () => openTreeFile(node, entry));
+    row.append(spacer, checkbox, icon, label, downloadButton, copyButton);
+    row.addEventListener("click", (event) => {
+      if (event.shiftKey) {
+        selectItemRange(
+          treeSelectionItems,
+          selectionItem,
+          event.metaKey || event.ctrlKey,
+        );
+      } else if (event.metaKey || event.ctrlKey) {
+        toggleSelectedItem(selectionItem);
+      } else {
+        openTreeFile(node, entry);
+      }
+    });
+    row.addEventListener("pointerdown", (event) => {
+      if (event.button === 2 && !state.selectedItems.has(entry.id)) {
+        selectOnlyItem(selectionItem);
+      }
+    });
     row.addEventListener("contextmenu", (event) => {
+      if (!state.selectedItems.has(entry.id)) selectOnlyItem(selectionItem);
       const sshSource = sshSourceForEntry(entry);
+      const selectedCount = state.selectedItems.size;
       const items = [
         { label: "打开", action: () => openTreeFile(node, entry) },
       ];
-      if (sshSource) {
+      if (sshSource && selectedCount === 1) {
         items.push({
           label: "重命名",
           action: () => beginTreeRename({
@@ -1982,8 +2200,12 @@ function renderDirectoryTree() {
           ),
         },
         {
-          label: "复制路径",
-          action: () => copyPath(entryPathForCopy(entry), "文件"),
+          label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
+          action: copySelectedPaths,
+        },
+        {
+          label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
+          action: deleteSelectedItems,
         },
       );
       showTreeContextMenu(event, items);
@@ -1991,9 +2213,19 @@ function renderDirectoryTree() {
     fragment.append(row);
   };
   const appendNode = (node, depth) => {
+    const selectionItem = selectionItemForNode(node);
+    if (selectionItem) treeSelectionItems.push(selectionItem);
+    if (selectionItem && state.selectedItems.has(selectionItem.id)) {
+      state.selectedItems.set(selectionItem.id, selectionItem);
+    }
     const row = document.createElement("div");
     row.className = "directory-row";
+    if (selectionItem) row.dataset.selectionId = selectionItem.id;
     row.classList.toggle("selected", node === state.selectedDirectory);
+    row.classList.toggle(
+      "multi-selected",
+      Boolean(selectionItem && state.selectedItems.has(selectionItem.id)),
+    );
     row.style.setProperty("--tree-depth", depth);
     row.title = node.source;
 
@@ -2005,6 +2237,17 @@ function renderDirectoryTree() {
     toggle.addEventListener("click", (event) => {
       event.stopPropagation();
       toggleDirectoryNode(node);
+    });
+    const checkbox = document.createElement("input");
+    checkbox.className = "directory-selection-checkbox";
+    checkbox.classList.toggle("root-selection-checkbox", !selectionItem);
+    checkbox.type = "checkbox";
+    checkbox.disabled = !selectionItem;
+    checkbox.checked = Boolean(selectionItem && state.selectedItems.has(selectionItem.id));
+    checkbox.setAttribute("aria-label", `选择 ${node.name || node.source}`);
+    checkbox.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSelectedItem(selectionItem);
     });
 
     const icon = document.createElement("span");
@@ -2023,10 +2266,35 @@ function renderDirectoryTree() {
       downloadDirectoryNode(node);
     });
     const copyButton = createCopyPathButton(node.source, "目录");
-    row.append(toggle, icon, label, downloadButton, copyButton);
-    row.addEventListener("click", () => selectDirectoryNode(node));
+    row.append(toggle, checkbox, icon, label, downloadButton, copyButton);
+    row.addEventListener("click", (event) => {
+      if (selectionItem && event.shiftKey) {
+        selectItemRange(
+          treeSelectionItems,
+          selectionItem,
+          event.metaKey || event.ctrlKey,
+        );
+      } else if (selectionItem && (event.metaKey || event.ctrlKey)) {
+        toggleSelectedItem(selectionItem);
+      } else {
+        selectDirectoryNode(node);
+      }
+    });
+    row.addEventListener("pointerdown", (event) => {
+      if (
+        selectionItem &&
+        event.button === 2 &&
+        !state.selectedItems.has(selectionItem.id)
+      ) {
+        selectOnlyItem(selectionItem);
+      }
+    });
     row.addEventListener("contextmenu", (event) => {
+      if (selectionItem && !state.selectedItems.has(selectionItem.id)) {
+        selectOnlyItem(selectionItem);
+      }
       const sshDirectory = isSshDirectoryNode(node);
+      const selectedCount = state.selectedItems.size;
       const items = [
         { label: "打开", action: () => selectDirectoryNode(node) },
       ];
@@ -2048,7 +2316,7 @@ function renderDirectoryTree() {
           },
         );
       }
-      if (sshDirectory && node.parent) {
+      if (sshDirectory && node.parent && selectedCount === 1) {
         items.push({
           label: "重命名",
           action: () => beginTreeRename({
@@ -2072,8 +2340,21 @@ function renderDirectoryTree() {
       }
       items.push(
         { label: "下载目录", action: () => downloadDirectoryNode(node) },
-        { label: "复制路径", action: () => copyPath(node.source, "目录") },
       );
+      if (selectionItem) {
+        items.push(
+          {
+            label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
+            action: copySelectedPaths,
+          },
+          {
+            label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
+            action: deleteSelectedItems,
+          },
+        );
+      } else {
+        items.push({ label: "复制路径", action: () => copyPath(node.source, "目录") });
+      }
       showTreeContextMenu(event, items);
     });
     enableSshDropTarget(row, node);
@@ -2105,6 +2386,7 @@ async function openSource(source, force = false, options = {}) {
 
   closeViewer(false);
   closeFileViewer(false);
+  clearSelection();
   state.source = cleanSource;
   state.sourceMode = sourceType(cleanSource).toLocaleLowerCase();
   state.targetType = "";
@@ -2277,12 +2559,32 @@ function renderGallery() {
   }, { rootMargin: "500px" });
 
   const fragment = document.createDocumentFragment();
+  const selectionItems = state.visibleEntries.map(
+    (entry) => selectionItemForEntry(entry, state.selectedDirectory),
+  );
+  const selectionItemsById = new Map(selectionItems.map((item) => [item.id, item]));
   state.visibleEntries.forEach((entry) => {
+    const selectionItem = selectionItemsById.get(entry.id);
+    if (state.selectedItems.has(entry.id)) {
+      state.selectedItems.set(entry.id, selectionItem);
+    }
     const card = document.createElement("article");
     card.className = "image-card";
+    card.dataset.selectionId = entry.id;
+    card.classList.toggle("selected", state.selectedItems.has(entry.id));
 
     const preview = document.createElement("div");
     preview.className = "image-preview";
+    const checkbox = document.createElement("input");
+    checkbox.className = "entry-selection-checkbox";
+    checkbox.type = "checkbox";
+    checkbox.checked = state.selectedItems.has(entry.id);
+    checkbox.setAttribute("aria-label", `选择 ${entry.name || entry.relativePath}`);
+    checkbox.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSelectedItem(selectionItem);
+    });
+    preview.append(checkbox);
     if (entry.type === "image") {
       const thumbnail = document.createElement("img");
       thumbnail.alt = "";
@@ -2300,7 +2602,10 @@ function renderGallery() {
         : "FILE";
       preview.append(symbol);
     }
-    preview.append(createFileDownloadButton(entry));
+    preview.append(
+      createFileCopyPathButton(entry),
+      createFileDownloadButton(entry),
+    );
 
     const info = document.createElement("div");
     info.className = "image-info";
@@ -2317,7 +2622,7 @@ function renderGallery() {
     info.append(name, meta);
 
     card.append(preview, info);
-    card.addEventListener("click", () => {
+    const openEntry = () => {
       if (entry.type === "image") {
         state.currentIndex = state.images.findIndex((item) => item.id === entry.id);
         openViewer();
@@ -2326,10 +2631,52 @@ function renderGallery() {
       } else {
         openFileViewer(entry);
       }
+    };
+    card.addEventListener("click", (event) => {
+      if (event.shiftKey) {
+        selectItemRange(
+          selectionItems,
+          selectionItem,
+          event.metaKey || event.ctrlKey,
+        );
+        return;
+      }
+      if (event.metaKey || event.ctrlKey) {
+        toggleSelectedItem(selectionItem);
+        return;
+      }
+      openEntry();
     });
+    card.addEventListener("pointerdown", (event) => {
+      if (event.button === 2 && !state.selectedItems.has(entry.id)) {
+        selectOnlyItem(selectionItem);
+      }
+    });
+    if (entry.type !== "image") {
+      card.addEventListener("contextmenu", (event) => {
+        if (!state.selectedItems.has(entry.id)) selectOnlyItem(selectionItem);
+        const selectedCount = state.selectedItems.size;
+        showTreeContextMenu(event, [
+          { label: "打开", action: openEntry },
+          {
+            label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
+            action: copySelectedPaths,
+          },
+          {
+            label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
+            action: deleteSelectedItems,
+          },
+        ]);
+      });
+    } else {
+      card.addEventListener("contextmenu", () => {
+        if (!state.selectedItems.has(entry.id)) selectOnlyItem(selectionItem);
+      });
+    }
     fragment.append(card);
   });
   elements.galleryGrid.append(fragment);
+  syncSelectionUI();
 }
 
 function searchImages(value) {
@@ -2352,6 +2699,7 @@ function navigateDirectoryUp() {
 async function refreshCurrentDirectory() {
   const node = state.selectedDirectory;
   if (!node) return;
+  clearSelection();
   if (node.syntheticS3Root && state.activeS3Node) {
     await openS3Root(state.activeS3Node, true);
     return;
@@ -3469,11 +3817,6 @@ async function openViewer(recoveryAttempt = 0) {
   );
   elements.viewerError.classList.add("hidden");
   elements.viewerName.textContent = image.relativePath;
-  elements.downloadOriginalButton.href = apiUrl("/api/file", {
-    id: image.id,
-    download: "1",
-  });
-  elements.downloadOriginalButton.download = image.name || "original-image";
   elements.viewerMeta.textContent =
     `${state.currentIndex + 1} / ${state.images.length} · ${formatBytes(image.size)}`;
 
@@ -3714,6 +4057,9 @@ elements.uploadDirectoryInput.addEventListener("change", async () => {
 elements.downloadDirectoryButton.addEventListener("click", () => {
   downloadDirectoryNode(state.selectedDirectory);
 });
+elements.copySelectedPathsButton.addEventListener("click", copySelectedPaths);
+elements.deleteSelectedButton.addEventListener("click", deleteSelectedItems);
+elements.clearSelectionButton.addEventListener("click", clearSelection);
 elements.favoriteButton.addEventListener("click", toggleFavorite);
 elements.searchInput.addEventListener("input", (event) => searchImages(event.target.value));
 elements.searchInput.addEventListener("keydown", async (event) => {
@@ -3791,12 +4137,6 @@ elements.textEditorInput.addEventListener("keydown", (event) => {
     event.preventDefault();
     saveCurrentText();
   }
-});
-elements.copyViewerImageButton.addEventListener("click", () => {
-  copyImageToClipboard(
-    state.images[state.currentIndex],
-    state.viewerImageUrl,
-  );
 });
 elements.closeViewerButton.addEventListener("click", closeViewer);
 elements.viewerHomeButton.addEventListener("click", showHome);

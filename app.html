@@ -157,6 +157,15 @@
               <span id="imageCount"></span>
             </div>
             <div class="toolbar-actions">
+              <div id="selectionActions" class="selection-actions hidden">
+                <span id="selectionCount">已选择 0 项</span>
+                <button id="copySelectedPathsButton" class="secondary"
+                  type="button">⧉ 复制路径</button>
+                <button id="deleteSelectedButton" class="danger-button"
+                  type="button">删除</button>
+                <button id="clearSelectionButton" class="secondary"
+                  type="button">取消选择</button>
+              </div>
               <input id="searchInput" class="search" type="search"
                 placeholder="搜索文件，或输入 S3/OSS 链接">
               <label class="thumbnail-size-control" title="调整缩略图大小">
@@ -262,8 +271,6 @@
           </div>
           <button id="fitButton" class="glass-button" type="button">适应窗口</button>
           <button id="actualButton" class="glass-button" type="button">100%</button>
-          <button id="copyViewerImageButton" class="glass-button" type="button">复制图片</button>
-          <a id="downloadOriginalButton" class="glass-button" download>下载原图</a>
         </div>
         <div id="viewerNotice" class="viewer-notice hidden">
           当前为缩放预览，原始分块准备完成后会自动切换。

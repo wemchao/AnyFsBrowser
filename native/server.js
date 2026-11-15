@@ -15,6 +15,8 @@ const {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
 } = require("@aws-sdk/client-s3");
 const { fromIni } = require("@aws-sdk/credential-providers");
 const ZipStream = require("zip-stream").default;
@@ -1858,6 +1860,104 @@ async function fileCapabilities(descriptor) {
   return { writable: false };
 }
 
+async function deleteDescriptor(descriptor) {
+  if (descriptor.kind === "archive") {
+    throw new HttpError(400, "归档包内部文件为只读，不能删除");
+  }
+  if (descriptor.kind === "local") {
+    const target = path.resolve(descriptor.path);
+    if (target === path.parse(target).root || target === path.resolve(os.homedir())) {
+      throw new HttpError(403, "不允许删除受保护的根目录");
+    }
+    const stat = await fsp.lstat(target).catch(() => null);
+    if (!stat) return;
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      if (!descriptor.directory) throw new HttpError(400, "目录标识无效");
+      await fsp.rm(target, { recursive: true });
+    } else {
+      await fsp.unlink(target);
+    }
+    return;
+  }
+  if (descriptor.kind === "ssh") {
+    const response = await remoteAgents.fetch(
+      descriptor,
+      "/delete",
+      {
+        path: descriptor.path,
+        directory: descriptor.directory ? "1" : "0",
+      },
+      { method: "POST" },
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new HttpError(
+        response.status,
+        result.error || `SSH 删除失败 (${response.status})`,
+      );
+    }
+    return;
+  }
+  if (descriptor.kind === "s3") {
+    const client = getS3Client(descriptor);
+    try {
+      if (!descriptor.directory) {
+        await client.send(new DeleteObjectCommand({
+          Bucket: descriptor.bucket,
+          Key: descriptor.key,
+        }));
+        return;
+      }
+      const prefix = String(descriptor.key || "");
+      if (!prefix) throw new HttpError(403, "不允许删除整个 Bucket");
+      while (true) {
+        const listed = await client.send(new ListObjectsV2Command({
+          Bucket: descriptor.bucket,
+          Prefix: prefix,
+          MaxKeys: 1000,
+        }));
+        const objects = (listed.Contents || [])
+          .filter((item) => item.Key)
+          .map((item) => ({ Key: item.Key }));
+        if (!objects.length) break;
+        const deletion = await client.send(new DeleteObjectsCommand({
+          Bucket: descriptor.bucket,
+          Delete: { Objects: objects, Quiet: true },
+        }));
+        if (deletion.Errors?.length) {
+          throw new Error(
+            deletion.Errors.map((item) => item.Message || item.Code).join("; "),
+          );
+        }
+      }
+      return;
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(502, `对象存储删除失败：${error.message || error}`);
+    }
+  }
+  throw new HttpError(400, "当前来源不支持删除");
+}
+
+async function deleteEntries(ids) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 100) {
+    throw new HttpError(400, "请选择 1 到 100 个文件或目录");
+  }
+  const uniqueIds = [...new Set(ids)];
+  const deleted = [];
+  const failed = [];
+  for (const id of uniqueIds) {
+    try {
+      const descriptor = decodeDescriptor(id);
+      await deleteDescriptor(descriptor);
+      deleted.push(id);
+    } catch (error) {
+      failed.push({ id, error: error.message || String(error) });
+    }
+  }
+  return { deleted, failed };
+}
+
 function contentTypeFor(filePath) {
   const types = {
     ".txt": "text/plain; charset=utf-8",
@@ -2082,6 +2182,13 @@ async function handleRequest(request, response) {
       request.headers["content-type"] || "text/plain; charset=utf-8",
     );
     sendJson(response, 200, { ok: true, ...result });
+    return;
+  }
+
+  if (url.pathname === "/api/entries/delete") {
+    if (request.method !== "POST") throw new HttpError(405, "删除只支持 POST 请求");
+    const body = await readJsonBody(request);
+    sendJson(response, 200, await deleteEntries(body.ids));
     return;
   }
 
