@@ -1922,6 +1922,9 @@ function formattedFileKind(entry) {
   if (name.endsWith(".json")) return "json";
   const extension = name.includes(".") ? name.split(".").at(-1) : "";
   if (["html", "htm"].includes(extension)) return "html";
+  if (["pdf", "mp3", "wav", "m4a", "aac", "flac"].includes(extension)) {
+    return "browser";
+  }
   if (["mp4", "webm", "mov", "m4v", "ogv", "ogg"].includes(extension)) {
     return "video";
   }
@@ -1933,8 +1936,15 @@ function formattedFileKind(entry) {
     "cpp", "cc", "cxx", "hpp", "go", "rs", "rb", "php", "swift", "kt",
     "kts", "sh", "bash", "zsh", "fish", "ps1", "sql", "yaml", "yml",
     "toml", "ini", "conf", "cfg", "properties", "vue", "svelte", "csv",
+    "cs", "fs", "fsx", "vb", "scala", "groovy", "gradle", "lua", "r",
+    "dart", "ex", "exs", "erl", "hrl", "clj", "cljs", "proto", "graphql",
+    "gql", "tex", "rst", "adoc", "lock", "diff", "patch", "bat", "cmd",
+    "cmake", "editorconfig", "gitignore", "gitattributes",
   ].includes(extension)) return "code";
-  return "";
+  if (["dockerfile", "makefile", "cmakelists.txt", ".env"].includes(name)) {
+    return "code";
+  }
+  return "generic";
 }
 
 function codeLanguage(entry) {
@@ -1982,6 +1992,8 @@ function formattedFileLabel(kind, entry) {
   if (kind === "markdown") return "MARKDOWN";
   if (kind === "json") return "JSON";
   if (kind === "html") return "HTML";
+  if (kind === "generic") return "FILE";
+  if (kind === "browser") return "";
   if (kind === "code") return codeLanguage(entry).toLocaleUpperCase();
   if (kind === "office-legacy") return "OFFICE";
   return kind.toLocaleUpperCase();
@@ -2385,6 +2397,66 @@ async function setHtmlViewMode(mode) {
   }
 }
 
+function renderCodeContent(entry, content, language = "plaintext", notice = "") {
+  const code = elements.codePreview.querySelector("code");
+  const lineCount = content.split(/\r\n|\r|\n/).length;
+  elements.codeLineNumbers.textContent = Array.from(
+    { length: lineCount },
+    (_, index) => index + 1,
+  ).join("\n");
+  code.className = `hljs language-${language}`;
+  const contentBytes = new TextEncoder().encode(content).byteLength;
+  if (contentBytes > 2 * 1024 * 1024 || !globalThis.CodeHighlighter) {
+    code.textContent = content;
+    if (!notice && contentBytes > 2 * 1024 * 1024) {
+      notice = "文件超过 2 MB，已关闭语法分析以保持浏览流畅。";
+    }
+  } else {
+    const highlighted = CodeHighlighter.highlight(content, language);
+    code.className = `hljs language-${highlighted.language}`;
+    code.innerHTML = highlighted.html;
+  }
+  if (notice) {
+    elements.formattedFileError.textContent = notice;
+    elements.formattedFileError.classList.remove("hidden");
+  }
+  elements.codePreview.classList.remove("hidden");
+}
+
+function decodeGenericText(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  if (
+    bytes.length >= 2 &&
+    ((bytes[0] === 0xff && bytes[1] === 0xfe) ||
+      (bytes[0] === 0xfe && bytes[1] === 0xff))
+  ) {
+    const encoding = bytes[0] === 0xff ? "utf-16le" : "utf-16be";
+    return new TextDecoder(encoding).decode(bytes);
+  }
+  const sample = bytes.subarray(0, Math.min(bytes.length, 64 * 1024));
+  let controlCharacters = 0;
+  for (const byte of sample) {
+    if (byte === 0) return null;
+    if (byte < 9 || (byte > 13 && byte < 32)) controlCharacters += 1;
+  }
+  if (sample.length && controlCharacters / sample.length > 0.03) return null;
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function showUnsupportedBinary(entry) {
+  const notice = document.createElement("div");
+  notice.className = "office-legacy-notice";
+  const title = document.createElement("strong");
+  title.textContent = "无法在编辑器中显示此二进制文件";
+  const detail = document.createElement("span");
+  detail.textContent =
+    `${entry.name || "该文件"} 不是可直接显示的文本格式。` +
+    "文件不会自动下载，如需保存请点击右上角“下载文件”。";
+  notice.append(title, detail);
+  elements.officePreview.replaceChildren(notice);
+  elements.officePreview.classList.remove("hidden");
+}
+
 async function openFileViewer(entry) {
   state.currentFileEntry = entry;
   state.currentTreeFileId = entry.id;
@@ -2404,8 +2476,9 @@ async function openFileViewer(entry) {
     download: "1",
   });
   elements.downloadFileButton.download = entry.name || "download";
-  elements.fileFormatBadge.textContent = formattedFileLabel(kind, entry);
-  elements.fileFormatBadge.classList.toggle("hidden", !kind);
+  const formatLabel = formattedFileLabel(kind, entry);
+  elements.fileFormatBadge.textContent = formatLabel;
+  elements.fileFormatBadge.classList.toggle("hidden", !formatLabel);
   elements.markdownLayoutControls.classList.toggle("hidden", kind !== "markdown");
   elements.htmlViewControls.classList.toggle("hidden", kind !== "html");
   if (kind === "markdown") setMarkdownLayout(state.markdownDefaultLayout);
@@ -2414,8 +2487,9 @@ async function openFileViewer(entry) {
   elements.viewerView.classList.add("hidden");
   elements.fileView.classList.remove("hidden");
 
-  elements.fileFrame.classList.toggle("hidden", Boolean(kind));
-  elements.formattedFilePreview.classList.toggle("hidden", !kind);
+  const browserPreview = kind === "browser";
+  elements.fileFrame.classList.toggle("hidden", !browserPreview);
+  elements.formattedFilePreview.classList.toggle("hidden", browserPreview);
   elements.formattedFilePreview.classList.toggle("video-mode", kind === "video");
   elements.markdownPreview.classList.add("hidden");
   elements.jsonPreview.classList.add("hidden");
@@ -2427,7 +2501,7 @@ async function openFileViewer(entry) {
   elements.videoPlayer.load();
   elements.formattedFileError.classList.add("hidden");
 
-  if (!kind) {
+  if (browserPreview) {
     elements.fileFrame.removeAttribute("sandbox");
     delete elements.fileFrame.dataset.renderEntry;
     elements.fileFrame.src = url;
@@ -2449,7 +2523,7 @@ async function openFileViewer(entry) {
     notice.className = "office-legacy-notice";
     notice.innerHTML =
       "<strong>旧版 Office 格式暂不支持页面内解析</strong>" +
-      "<span>请使用右上角“在新标签页打开”下载原文件；DOCX、XLSX、PPTX 可直接预览。</span>";
+      "<span>请使用右上角“下载文件”保存原文件；DOCX、XLSX、PPTX 可直接预览。</span>";
     elements.officePreview.replaceChildren(notice);
     elements.officePreview.classList.remove("hidden");
     elements.formattedFileLoading.classList.add("hidden");
@@ -2457,10 +2531,18 @@ async function openFileViewer(entry) {
   }
   elements.formattedFileLoading.classList.remove("hidden");
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const genericPreview = kind === "generic";
+    const response = await fetch(url, {
+      signal: controller.signal,
+      ...(genericPreview
+        ? { headers: { Range: "bytes=0-4194303" } }
+        : {}),
+    });
     if (!response.ok) throw new Error(`文件读取失败 (${response.status})`);
     const isOffice = ["docx", "xlsx", "pptx"].includes(kind);
-    const content = isOffice ? await response.arrayBuffer() : await response.text();
+    const content = isOffice || genericPreview
+      ? await response.arrayBuffer()
+      : await response.text();
     if (controller.signal.aborted) return;
 
     if (kind === "markdown") {
@@ -2477,27 +2559,24 @@ async function openFileViewer(entry) {
       }
       elements.jsonPreview.classList.remove("hidden");
     } else if (kind === "code" || kind === "html") {
-      const code = elements.codePreview.querySelector("code");
       const language = kind === "html" ? "xml" : codeLanguage(entry);
-      const lineCount = content.split(/\r\n|\r|\n/).length;
-      elements.codeLineNumbers.textContent = Array.from(
-        { length: lineCount },
-        (_, index) => index + 1,
-      ).join("\n");
-      code.className = `hljs language-${language}`;
-      if (entry.size > 2 * 1024 * 1024 || !globalThis.CodeHighlighter) {
-        code.textContent = content;
-        if (entry.size > 2 * 1024 * 1024) {
-          elements.formattedFileError.textContent =
-            "文件超过 2 MB，已关闭语法分析以保持浏览流畅。";
-          elements.formattedFileError.classList.remove("hidden");
-        }
+      renderCodeContent(entry, content, language);
+    } else if (genericPreview) {
+      const text = decodeGenericText(content);
+      if (text === null) {
+        showUnsupportedBinary(entry);
       } else {
-        const highlighted = CodeHighlighter.highlight(content, language);
-        code.className = `hljs language-${highlighted.language}`;
-        code.innerHTML = highlighted.html;
+        const rangeMatch = response.headers
+          .get("Content-Range")
+          ?.match(/bytes\s+\d+-(\d+)\/(\d+)/i);
+        const truncated = rangeMatch && Number(rangeMatch[1]) + 1 < Number(rangeMatch[2]);
+        renderCodeContent(
+          entry,
+          text,
+          "plaintext",
+          truncated ? "文件较大，仅显示前 4 MB；可使用右上角下载完整文件。" : "",
+        );
       }
-      elements.codePreview.classList.remove("hidden");
     } else if (isOffice) {
       await renderOfficePreview(kind, content);
       elements.officePreview.classList.remove("hidden");

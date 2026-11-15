@@ -338,7 +338,6 @@ async function listLocal(source, recursive) {
     }
 
     for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
       const fullPath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         if (recursive) {
@@ -930,11 +929,19 @@ function descriptorFileName(descriptor) {
   return path.posix.basename(sourcePath || "image").replaceAll('"', "");
 }
 
-function attachmentDisposition(fileName) {
+function contentDisposition(fileName, type = "attachment") {
   const clean = String(fileName || "download").replaceAll(/[\r\n"]/g, "");
   const fallback = clean.replaceAll(/[^\x20-\x7e]/g, "_") || "download";
   const encoded = encodeURIComponent(clean).replaceAll("'", "%27");
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+function attachmentDisposition(fileName) {
+  return contentDisposition(fileName, "attachment");
+}
+
+function inlineDisposition(fileName) {
+  return contentDisposition(fileName, "inline");
 }
 
 async function ensureDescriptorVersion(descriptor) {
@@ -1590,6 +1597,11 @@ async function proxyRemoteFile(request, response, descriptor, options = {}) {
     const value = remoteResponse.headers.get(name);
     if (value) forwardedHeaders[name] = value;
   }
+  if (!options.cached) {
+    forwardedHeaders["content-disposition"] = options.download
+      ? attachmentDisposition(descriptorFileName(descriptor))
+      : inlineDisposition(descriptorFileName(descriptor));
+  }
   response.writeHead(remoteResponse.status, forwardedHeaders);
   await pipeline(Readable.fromWeb(remoteResponse.body), response);
 }
@@ -1616,11 +1628,9 @@ async function proxyS3File(request, response, descriptor, download = false) {
     headers["Content-Length"] = result.ContentLength;
   }
   if (result.ContentRange) headers["Content-Range"] = result.ContentRange;
-  if (download) {
-    headers["Content-Disposition"] = attachmentDisposition(
-      path.posix.basename(descriptor.key),
-    );
-  }
+  headers["Content-Disposition"] = download
+    ? attachmentDisposition(path.posix.basename(descriptor.key))
+    : inlineDisposition(path.posix.basename(descriptor.key));
   response.writeHead(status, headers);
   await pipeline(result.Body, response);
 }
@@ -2064,7 +2074,12 @@ async function handleRequest(request, response) {
               descriptorFileName(descriptor),
             ),
           }
-          : { "X-File-Cache": descriptor.kind === "local" ? "LOCAL" : "HIT" },
+          : {
+            "Content-Disposition": inlineDisposition(
+              descriptorFileName(descriptor),
+            ),
+            "X-File-Cache": descriptor.kind === "local" ? "LOCAL" : "HIT",
+          },
         request.headers.range,
       );
       return;
@@ -2089,7 +2104,11 @@ async function handleRequest(request, response) {
             descriptorFileName(descriptor),
           ),
         }
-        : {},
+        : {
+          "Content-Disposition": inlineDisposition(
+            descriptorFileName(descriptor),
+          ),
+        },
       request.headers.range,
     );
     return;
