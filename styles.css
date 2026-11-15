@@ -826,19 +826,18 @@ code {
 }
 
 .directory-selection-checkbox {
+  display: none;
   width: 15px;
   height: 15px;
   flex: 0 0 auto;
   margin: 0 2px 0 0;
   accent-color: var(--accent);
   cursor: pointer;
-  opacity: 0;
 }
 
-.directory-row:hover .directory-selection-checkbox,
-.directory-row.multi-selected .directory-selection-checkbox,
-.directory-selection-checkbox:focus-visible {
-  opacity: 1;
+.directory-selection-modifier-active .directory-selection-checkbox,
+.directory-multi-selection-active .directory-selection-checkbox {
+  display: block;
 }
 
 .directory-selection-checkbox.root-selection-checkbox {

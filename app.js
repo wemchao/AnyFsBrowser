@@ -532,6 +532,7 @@ function selectionItemForNode(node) {
 
 function syncSelectionUI() {
   const count = state.selectedItems.size;
+  document.body.classList.toggle("directory-multi-selection-active", count > 1);
   elements.selectionActions.classList.toggle("hidden", count === 0);
   elements.selectionCount.textContent = `已选择 ${count} 项`;
   elements.downloadDirectoryButton.disabled = count === 0;
@@ -4594,6 +4595,24 @@ document.addEventListener("paste", async (event) => {
   } catch (error) {
     showUploadStatus(`粘贴图片失败：${error.message}`, true);
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  document.body.classList.toggle(
+    "directory-selection-modifier-active",
+    event.ctrlKey || event.metaKey || event.shiftKey,
+  );
+});
+
+document.addEventListener("keyup", (event) => {
+  document.body.classList.toggle(
+    "directory-selection-modifier-active",
+    event.ctrlKey || event.metaKey || event.shiftKey,
+  );
+});
+
+window.addEventListener("blur", () => {
+  document.body.classList.remove("directory-selection-modifier-active");
 });
 
 document.addEventListener("keydown", (event) => {
