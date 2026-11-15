@@ -27,6 +27,8 @@ const state = {
   thumbnailSize: 220,
   markdownDefaultLayout: "wide",
   markdownLayout: "wide",
+  htmlViewMode: "source",
+  currentFileEntry: null,
   viewer: null,
   viewerRequestId: 0,
   viewerImageUrl: "",
@@ -95,6 +97,9 @@ const elements = {
   markdownLayoutControls: $("#markdownLayoutControls"),
   markdownLayoutWide: $("#markdownLayoutWide"),
   markdownLayoutReading: $("#markdownLayoutReading"),
+  htmlViewControls: $("#htmlViewControls"),
+  htmlSourceButton: $("#htmlSourceButton"),
+  htmlRenderedButton: $("#htmlRenderedButton"),
   formattedFilePreview: $("#formattedFilePreview"),
   formattedFileLoading: $("#formattedFileLoading"),
   formattedFileError: $("#formattedFileError"),
@@ -1740,13 +1745,14 @@ function formattedFileKind(entry) {
   if (name.endsWith(".md") || name.endsWith(".markdown")) return "markdown";
   if (name.endsWith(".json")) return "json";
   const extension = name.includes(".") ? name.split(".").at(-1) : "";
+  if (["html", "htm"].includes(extension)) return "html";
   if (["mp4", "webm", "mov", "m4v", "ogv", "ogg"].includes(extension)) {
     return "video";
   }
   if (["docx", "xlsx", "pptx"].includes(extension)) return extension;
   if (["doc", "xls", "ppt"].includes(extension)) return "office-legacy";
   if ([
-    "txt", "text", "log", "html", "htm", "xml", "css", "scss", "less",
+    "txt", "text", "log", "xml", "css", "scss", "less",
     "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "java", "c", "h",
     "cpp", "cc", "cxx", "hpp", "go", "rs", "rb", "php", "swift", "kt",
     "kts", "sh", "bash", "zsh", "fish", "ps1", "sql", "yaml", "yml",
@@ -1799,6 +1805,7 @@ function codeLanguage(entry) {
 function formattedFileLabel(kind, entry) {
   if (kind === "markdown") return "MARKDOWN";
   if (kind === "json") return "JSON";
+  if (kind === "html") return "HTML";
   if (kind === "code") return codeLanguage(entry).toLocaleUpperCase();
   if (kind === "office-legacy") return "OFFICE";
   return kind.toLocaleUpperCase();
@@ -2162,7 +2169,37 @@ async function renderOfficePreview(kind, arrayBuffer) {
   }
 }
 
+function htmlRenderUrl(entry) {
+  const descriptor = decodeEntryDescriptor(entry.id);
+  if (!descriptor) return "";
+  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+  const fileName = sourcePath.split("/").filter(Boolean).at(-1) || "index.html";
+  return `${SERVER}/api/html-render/${encodeURIComponent(state.token)}/` +
+    `${encodeURIComponent(entry.id)}/${encodeURIComponent(fileName)}`;
+}
+
+function setHtmlViewMode(mode) {
+  const rendered = mode === "rendered";
+  state.htmlViewMode = rendered ? "rendered" : "source";
+  elements.htmlSourceButton.classList.toggle("active", !rendered);
+  elements.htmlRenderedButton.classList.toggle("active", rendered);
+  elements.htmlSourceButton.setAttribute("aria-pressed", String(!rendered));
+  elements.htmlRenderedButton.setAttribute("aria-pressed", String(rendered));
+  elements.formattedFilePreview.classList.toggle("hidden", rendered);
+  elements.fileFrame.classList.toggle("hidden", !rendered);
+
+  if (!rendered || !state.currentFileEntry) return;
+  const renderUrl = htmlRenderUrl(state.currentFileEntry);
+  if (!renderUrl) return;
+  if (elements.fileFrame.dataset.renderEntry !== state.currentFileEntry.id) {
+    elements.fileFrame.setAttribute("sandbox", "");
+    elements.fileFrame.dataset.renderEntry = state.currentFileEntry.id;
+    elements.fileFrame.src = renderUrl;
+  }
+}
+
 async function openFileViewer(entry) {
+  state.currentFileEntry = entry;
   state.currentTreeFileId = entry.id;
   if (state.directoryRoot) renderDirectoryTree();
   state.filePreviewController?.abort();
@@ -2179,6 +2216,7 @@ async function openFileViewer(entry) {
   elements.fileFormatBadge.textContent = formattedFileLabel(kind, entry);
   elements.fileFormatBadge.classList.toggle("hidden", !kind);
   elements.markdownLayoutControls.classList.toggle("hidden", kind !== "markdown");
+  elements.htmlViewControls.classList.toggle("hidden", kind !== "html");
   if (kind === "markdown") setMarkdownLayout(state.markdownDefaultLayout);
   elements.homeView.classList.add("hidden");
   elements.galleryView.classList.toggle("hidden", directFile);
@@ -2199,11 +2237,15 @@ async function openFileViewer(entry) {
   elements.formattedFileError.classList.add("hidden");
 
   if (!kind) {
+    elements.fileFrame.removeAttribute("sandbox");
+    delete elements.fileFrame.dataset.renderEntry;
     elements.fileFrame.src = url;
     return;
   }
 
   elements.fileFrame.src = "about:blank";
+  delete elements.fileFrame.dataset.renderEntry;
+  if (kind === "html") setHtmlViewMode("source");
   if (kind === "video") {
     elements.videoPlayer.autoplay = false;
     elements.videoPlayer.src = url;
@@ -2243,9 +2285,9 @@ async function openFileViewer(entry) {
         elements.formattedFileError.classList.remove("hidden");
       }
       elements.jsonPreview.classList.remove("hidden");
-    } else if (kind === "code") {
+    } else if (kind === "code" || kind === "html") {
       const code = elements.codePreview.querySelector("code");
-      const language = codeLanguage(entry);
+      const language = kind === "html" ? "xml" : codeLanguage(entry);
       const lineCount = content.split(/\r\n|\r|\n/).length;
       elements.codeLineNumbers.textContent = Array.from(
         { length: lineCount },
@@ -2284,7 +2326,9 @@ function closeFileViewer(showDirectory = true) {
   if (elements.fileView.classList.contains("hidden")) return;
   state.filePreviewController?.abort();
   state.filePreviewController = null;
+  state.currentFileEntry = null;
   elements.fileFrame.src = "about:blank";
+  delete elements.fileFrame.dataset.renderEntry;
   elements.markdownPreview.replaceChildren();
   elements.jsonPreview.querySelector("code").replaceChildren();
   elements.codePreview.querySelector("code").replaceChildren();
@@ -2603,6 +2647,11 @@ elements.markdownLayoutWide.addEventListener("click", () => setMarkdownLayout("w
 elements.markdownLayoutReading.addEventListener(
   "click",
   () => setMarkdownLayout("reading"),
+);
+elements.htmlSourceButton.addEventListener("click", () => setHtmlViewMode("source"));
+elements.htmlRenderedButton.addEventListener(
+  "click",
+  () => setHtmlViewMode("rendered"),
 );
 elements.viewerCanvas.addEventListener("contextmenu", (event) => {
   event.preventDefault();

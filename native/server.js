@@ -1316,6 +1316,54 @@ function contentTypeFor(filePath) {
   return types[path.extname(filePath).toLowerCase()] || "application/octet-stream";
 }
 
+function htmlRenderDescriptor(documentDescriptor, requestedPath) {
+  let decodedPath;
+  try {
+    decodedPath = requestedPath
+      .split("/")
+      .map((segment) => decodeURIComponent(segment))
+      .join("/");
+  } catch {
+    throw new HttpError(400, "HTML 资源路径无效");
+  }
+  if (
+    !decodedPath ||
+    decodedPath.includes("\0") ||
+    path.posix.isAbsolute(decodedPath)
+  ) {
+    throw new HttpError(400, "HTML 资源路径无效");
+  }
+
+  const normalized = path.posix.normalize(decodedPath);
+  if (normalized === ".." || normalized.startsWith("../")) {
+    throw new HttpError(403, "HTML 资源不能访问页面目录之外的文件");
+  }
+
+  const descriptor = { ...documentDescriptor };
+  delete descriptor.size;
+  delete descriptor.modified;
+  delete descriptor.etag;
+  delete descriptor.directory;
+
+  if (descriptor.kind === "local") {
+    const root = path.dirname(descriptor.path);
+    const target = path.resolve(root, ...normalized.split("/"));
+    const relative = path.relative(root, target);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new HttpError(403, "HTML 资源不能访问页面目录之外的文件");
+    }
+    descriptor.path = target;
+    return descriptor;
+  }
+
+  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+  const root = path.posix.dirname(sourcePath);
+  const target = root === "." ? normalized : path.posix.join(root, normalized);
+  if (descriptor.kind === "s3") descriptor.key = target;
+  else descriptor.path = target;
+  return descriptor;
+}
+
 async function handleRequest(request, response) {
   setCors(request, response);
   if (request.method === "OPTIONS") {
@@ -1357,6 +1405,43 @@ async function handleRequest(request, response) {
       throw new HttpError(403, "只允许 AnyFs Browser 连接");
     }
     sendJson(response, 200, { token: SESSION_TOKEN, version: "0.1.0" });
+    return;
+  }
+
+  const htmlRenderMatch = url.pathname.match(
+    /^\/api\/html-render\/([^/]+)\/([^/]+)\/(.+)$/,
+  );
+  if (htmlRenderMatch) {
+    if (request.method !== "GET") throw new HttpError(405, "只支持 GET 请求");
+    const [, token, documentId, requestedPath] = htmlRenderMatch;
+    if (token !== SESSION_TOKEN) throw new HttpError(401, "HTML 预览会话已失效");
+    const descriptor = htmlRenderDescriptor(
+      decodeDescriptor(decodeURIComponent(documentId)),
+      requestedPath,
+    );
+    const filePath = await materialize(descriptor);
+    const contentType = contentTypeFor(
+      descriptor.kind === "s3" ? descriptor.key : descriptor.path,
+    );
+    const headers = {
+      "X-Content-Type-Options": "nosniff",
+      ...(contentType.startsWith("text/html")
+        ? {
+          "Content-Security-Policy":
+            "default-src 'self' data: blob:; script-src 'none'; " +
+            "style-src 'self' 'unsafe-inline' data:; connect-src 'none'; " +
+            "object-src 'none'; base-uri 'self'; form-action 'none'",
+        }
+        : {}),
+    };
+    await sendFile(
+      response,
+      filePath,
+      contentType,
+      false,
+      headers,
+      request.headers.range,
+    );
     return;
   }
 

@@ -1141,7 +1141,8 @@ body.resizing-sidebar {
   text-decoration: none;
 }
 
-.markdown-layout-controls {
+.markdown-layout-controls,
+.preview-mode-controls {
   display: flex;
   align-items: center;
   overflow: hidden;
@@ -1150,7 +1151,8 @@ body.resizing-sidebar {
   background: #0c0f14;
 }
 
-.markdown-layout-controls button {
+.markdown-layout-controls button,
+.preview-mode-controls button {
   min-width: 54px;
   height: 30px;
   padding: 0 8px;
@@ -1161,17 +1163,21 @@ body.resizing-sidebar {
   cursor: pointer;
 }
 
-.markdown-layout-controls button:last-child {
+.markdown-layout-controls button:last-child,
+.preview-mode-controls button:last-child {
   border-right: 0;
 }
 
 .markdown-layout-controls button:hover,
-.markdown-layout-controls button.active {
+.markdown-layout-controls button.active,
+.preview-mode-controls button:hover,
+.preview-mode-controls button.active {
   background: rgba(124, 156, 255, 0.12);
   color: var(--text);
 }
 
-.markdown-layout-controls button.active {
+.markdown-layout-controls button.active,
+.preview-mode-controls button.active {
   background: rgba(124, 156, 255, 0.22);
   color: #eef2ff;
 }
