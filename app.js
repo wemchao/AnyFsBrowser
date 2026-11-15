@@ -30,6 +30,8 @@ const state = {
   markdownLayout: "wide",
   htmlViewMode: "rendered",
   currentFileEntry: null,
+  currentFileText: null,
+  currentFileTextTruncated: false,
   viewer: null,
   viewerRequestId: 0,
   viewerImageUrl: "",
@@ -113,6 +115,7 @@ const elements = {
   videoPreview: $("#videoPreview"),
   videoPlayer: $("#videoPlayer"),
   fileFrame: $("#fileFrame"),
+  copyFileTextButton: $("#copyFileTextButton"),
   downloadFileButton: $("#downloadFileButton"),
   closeViewerButton: $("#closeViewerButton"),
   viewerHomeButton: $("#viewerHomeButton"),
@@ -120,6 +123,7 @@ const elements = {
   nextButton: $("#nextButton"),
   fitButton: $("#fitButton"),
   actualButton: $("#actualButton"),
+  copyViewerImageButton: $("#copyViewerImageButton"),
   downloadOriginalButton: $("#downloadOriginalButton"),
   viewerName: $("#viewerName"),
   viewerMeta: $("#viewerMeta"),
@@ -1548,12 +1552,6 @@ function renderDirectoryTree() {
     const copyButton = createCopyPathButton(entryPathForCopy(entry), "文件");
     row.append(spacer, icon, label, downloadButton, copyButton);
     row.addEventListener("click", () => openTreeFile(node, entry));
-    if (entry.type === "image") {
-      row.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        copyImageToClipboard(entry);
-      });
-    }
     fragment.append(row);
   };
   const appendNode = (node, depth) => {
@@ -1840,12 +1838,6 @@ function renderGallery() {
         openFileViewer(entry);
       }
     });
-    if (entry.type === "image") {
-      card.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        copyImageToClipboard(entry);
-      });
-    }
     fragment.append(card);
   });
   elements.galleryGrid.append(fragment);
@@ -2423,6 +2415,55 @@ function renderCodeContent(entry, content, language = "plaintext", notice = "") 
   elements.codePreview.classList.remove("hidden");
 }
 
+function setCurrentFileText(content, truncated = false) {
+  state.currentFileText = content;
+  state.currentFileTextTruncated = truncated;
+  elements.copyFileTextButton.textContent =
+    truncated ? "⧉ 复制已显示内容" : "⧉ 复制全文";
+  elements.copyFileTextButton.classList.remove("hidden");
+}
+
+async function copyCurrentFileText() {
+  if (state.currentFileText === null) return;
+  try {
+    await navigator.clipboard.writeText(state.currentFileText);
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = state.currentFileText;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+  showToast(state.currentFileTextTruncated ? "已复制当前显示内容" : "已复制文件全文");
+}
+
+function visibleFileTextElement() {
+  if (!elements.codePreview.classList.contains("hidden")) {
+    return elements.codePreview.querySelector(".code-source code");
+  }
+  if (!elements.jsonPreview.classList.contains("hidden")) {
+    return elements.jsonPreview.querySelector("code");
+  }
+  if (!elements.markdownPreview.classList.contains("hidden")) {
+    return elements.markdownPreview;
+  }
+  return null;
+}
+
+function selectVisibleFileText() {
+  const target = visibleFileTextElement();
+  if (!target) return false;
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
 function decodeGenericText(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   if (
@@ -2459,6 +2500,9 @@ function showUnsupportedBinary(entry) {
 
 async function openFileViewer(entry) {
   state.currentFileEntry = entry;
+  state.currentFileText = null;
+  state.currentFileTextTruncated = false;
+  elements.copyFileTextButton.classList.add("hidden");
   state.currentTreeFileId = entry.id;
   if (state.directoryRoot) renderDirectoryTree();
   state.filePreviewController?.abort();
@@ -2546,10 +2590,12 @@ async function openFileViewer(entry) {
     if (controller.signal.aborted) return;
 
     if (kind === "markdown") {
+      setCurrentFileText(content);
       await renderMarkdown(content, entry);
       if (controller.signal.aborted) return;
       elements.markdownPreview.classList.remove("hidden");
     } else if (kind === "json") {
+      setCurrentFileText(content);
       try {
         elements.jsonPreview.querySelector("code").innerHTML = highlightedJson(content);
       } catch (error) {
@@ -2559,6 +2605,7 @@ async function openFileViewer(entry) {
       }
       elements.jsonPreview.classList.remove("hidden");
     } else if (kind === "code" || kind === "html") {
+      setCurrentFileText(content);
       const language = kind === "html" ? "xml" : codeLanguage(entry);
       renderCodeContent(entry, content, language);
     } else if (genericPreview) {
@@ -2570,6 +2617,7 @@ async function openFileViewer(entry) {
           .get("Content-Range")
           ?.match(/bytes\s+\d+-(\d+)\/(\d+)/i);
         const truncated = rangeMatch && Number(rangeMatch[1]) + 1 < Number(rangeMatch[2]);
+        setCurrentFileText(text, Boolean(truncated));
         renderCodeContent(
           entry,
           text,
@@ -2597,6 +2645,9 @@ function closeFileViewer(showDirectory = true) {
   state.filePreviewController?.abort();
   state.filePreviewController = null;
   state.currentFileEntry = null;
+  state.currentFileText = null;
+  state.currentFileTextTruncated = false;
+  elements.copyFileTextButton.classList.add("hidden");
   elements.fileFrame.src = "about:blank";
   delete elements.fileFrame.dataset.renderEntry;
   elements.markdownPreview.replaceChildren();
@@ -2916,6 +2967,7 @@ elements.thumbnailSize.addEventListener("change", (event) => {
 });
 elements.closeFileButton.addEventListener("click", () => closeFileViewer(true));
 elements.fileHomeButton.addEventListener("click", showHome);
+elements.copyFileTextButton.addEventListener("click", copyCurrentFileText);
 elements.markdownLayoutWide.addEventListener("click", () => setMarkdownLayout("wide"));
 elements.markdownLayoutReading.addEventListener(
   "click",
@@ -2926,8 +2978,7 @@ elements.htmlRenderedButton.addEventListener(
   "click",
   () => setHtmlViewMode("rendered"),
 );
-elements.viewerCanvas.addEventListener("contextmenu", (event) => {
-  event.preventDefault();
+elements.copyViewerImageButton.addEventListener("click", () => {
   copyImageToClipboard(
     state.images[state.currentIndex],
     state.viewerImageUrl,
@@ -2941,6 +2992,21 @@ elements.fitButton.addEventListener("click", () => state.viewer?.viewport.goHome
 elements.actualButton.addEventListener("click", () => {
   const zoom = state.viewer?.viewport.imageToViewportZoom(1);
   if (zoom) state.viewer.viewport.zoomTo(zoom);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key.toLocaleLowerCase() !== "a" ||
+    (!event.metaKey && !event.ctrlKey) ||
+    elements.fileView.classList.contains("hidden") ||
+    state.currentFileText === null
+  ) return;
+  const active = document.activeElement;
+  if (
+    active?.matches("input, textarea, [contenteditable='true']") ||
+    !selectVisibleFileText()
+  ) return;
+  event.preventDefault();
 });
 
 document.addEventListener("keydown", (event) => {
