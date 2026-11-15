@@ -989,6 +989,11 @@ body.resizing-sidebar {
   user-select: none;
 }
 
+body.marquee-selecting {
+  cursor: crosshair;
+  user-select: none;
+}
+
 .file-workspace {
   position: relative;
   min-width: 0;
@@ -1159,6 +1164,15 @@ body.resizing-sidebar {
   grid-template-columns:
     repeat(auto-fill, minmax(min(100%, var(--thumbnail-size)), 1fr));
   gap: 14px;
+}
+
+.marquee-selection {
+  position: fixed;
+  z-index: 30;
+  border: 1px solid rgba(124, 156, 255, 0.95);
+  background: rgba(124, 156, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(124, 156, 255, 0.08) inset;
+  pointer-events: none;
 }
 
 .image-card {

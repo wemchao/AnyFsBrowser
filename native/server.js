@@ -14,9 +14,6 @@ const {
   ListObjectsV2Command,
   GetObjectCommand,
   HeadObjectCommand,
-  PutObjectCommand,
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
 } = require("@aws-sdk/client-s3");
 const { fromIni } = require("@aws-sdk/credential-providers");
 const ZipStream = require("zip-stream").default;
@@ -49,6 +46,7 @@ const remoteAgents = new RemoteAgentManager();
 const remoteBrowserImages = new Map();
 const htmlRenderSessions = new Map();
 const archiveListings = new Map();
+const downloadSelections = new Map();
 
 function sendNativeMessage(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -1275,6 +1273,116 @@ async function streamDirectoryZip(response, descriptor) {
   }
 }
 
+function directoryFileIterator(descriptor) {
+  if (descriptor.kind === "local") return localDirectoryFiles(descriptor);
+  if (descriptor.kind === "ssh") return sshDirectoryFiles(descriptor);
+  if (descriptor.kind === "s3") return s3DirectoryFiles(descriptor);
+  return archiveDirectoryFiles(descriptor);
+}
+
+async function selectedFileZipEntry(descriptor, name) {
+  if (descriptor.kind === "local") {
+    const stat = await fsp.stat(descriptor.path);
+    return { name, stream: fs.createReadStream(descriptor.path), date: stat.mtime };
+  }
+  if (descriptor.kind === "ssh") {
+    const response = await remoteAgents.fetch(descriptor, "/file", {
+      path: descriptor.path,
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new HttpError(response.status, result.error || "SSH 文件读取失败");
+    }
+    return {
+      name,
+      stream: Readable.fromWeb(response.body),
+      date: Number.isFinite(descriptor.modified)
+        ? new Date(descriptor.modified)
+        : undefined,
+    };
+  }
+  if (descriptor.kind === "s3") {
+    const result = await getS3Client(descriptor).send(new GetObjectCommand({
+      Bucket: descriptor.bucket,
+      Key: descriptor.key,
+    }));
+    if (!result.Body) throw new HttpError(502, "S3/OSS 文件读取失败");
+    return { name, stream: result.Body, date: result.LastModified };
+  }
+  const filePath = await materialize(descriptor);
+  return { name, stream: fs.createReadStream(filePath) };
+}
+
+function uniqueSelectedName(descriptor, usedNames) {
+  const sourcePath = descriptorSourcePath(descriptor).replace(/\/+$/, "");
+  const fallback = descriptor.directory ? "folder" : "file";
+  const rawName = safeZipPath(path.posix.basename(sourcePath)) || fallback;
+  const extension = descriptor.directory ? "" : path.posix.extname(rawName);
+  const stem = extension ? rawName.slice(0, -extension.length) : rawName;
+  let name = rawName;
+  let suffix = 2;
+  while (usedNames.has(name.toLocaleLowerCase())) {
+    name = `${stem} (${suffix})${extension}`;
+    suffix += 1;
+  }
+  usedNames.add(name.toLocaleLowerCase());
+  return name;
+}
+
+async function streamSelectedZip(response, descriptors) {
+  response.writeHead(200, {
+    "Content-Type": "application/zip",
+    "Content-Disposition": attachmentDisposition("AnyFs-selected.zip"),
+    "Cache-Control": "no-store",
+  });
+  const zip = new ZipStream({ level: 6 });
+  zip.pipe(response);
+  const usedNames = new Set();
+  try {
+    for (const descriptor of descriptors) {
+      const selectedName = uniqueSelectedName(descriptor, usedNames);
+      if (!descriptor.directory) {
+        await addZipEntry(zip, await selectedFileZipEntry(descriptor, selectedName));
+        continue;
+      }
+      for await (const item of directoryFileIterator(descriptor)) {
+        const separator = item.name.indexOf("/");
+        const relativeName = separator >= 0
+          ? item.name.slice(separator + 1)
+          : item.name;
+        if (!relativeName) continue;
+        await addZipEntry(zip, {
+          ...item,
+          name: `${selectedName}/${relativeName}`,
+        });
+      }
+    }
+    zip.finalize();
+    await once(response, "finish");
+  } catch (error) {
+    zip.destroy(error);
+    response.destroy(error);
+  }
+}
+
+function createDownloadSelection(ids) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 1000) {
+    throw new HttpError(400, "请选择 1 到 1000 个文件或目录");
+  }
+  for (const [key, selection] of downloadSelections) {
+    if (selection.expiresAt < Date.now()) downloadSelections.delete(key);
+  }
+  while (downloadSelections.size >= 100) {
+    downloadSelections.delete(downloadSelections.keys().next().value);
+  }
+  const token = crypto.randomBytes(24).toString("base64url");
+  downloadSelections.set(token, {
+    descriptors: [...new Set(ids)].map(decodeDescriptor),
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
+  return token;
+}
+
 function singleJob(key, task) {
   if (jobs.has(key)) return jobs.get(key);
   const promise = Promise.resolve()
@@ -1518,12 +1626,12 @@ function sendJson(response, status, body) {
   response.end(content);
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maximum = 64 * 1024) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > 64 * 1024) throw new HttpError(413, "配置内容过大");
+    if (total > maximum) throw new HttpError(413, "请求内容过大");
     chunks.push(chunk);
   }
   try {
@@ -1804,28 +1912,7 @@ async function saveTextFile(descriptor, content, contentType) {
     };
   }
   if (descriptor.kind === "s3") {
-    try {
-      const result = await getS3Client(descriptor).send(new PutObjectCommand({
-        Bucket: descriptor.bucket,
-        Key: descriptor.key,
-        Body: content,
-        ContentLength: content.length,
-        ContentType: contentType,
-      }));
-      const modified = Date.now();
-      return {
-        id: encodeDescriptor({
-          ...descriptor,
-          size: content.length,
-          modified,
-          etag: result.ETag,
-        }),
-        size: content.length,
-        modified,
-      };
-    } catch (error) {
-      throw new HttpError(502, `对象存储保存失败：${error.message || error}`);
-    }
+    throw new HttpError(403, "S3/OSS 使用只读模式，不能修改文件");
   }
   throw new HttpError(400, "当前来源不支持保存");
 }
@@ -1855,7 +1942,7 @@ async function fileCapabilities(descriptor) {
     }
   }
   if (descriptor.kind === "s3") {
-    return { writable: true, permissionCheckedOnSave: true };
+    return { writable: false, readOnly: true };
   }
   return { writable: false };
 }
@@ -1899,42 +1986,7 @@ async function deleteDescriptor(descriptor) {
     return;
   }
   if (descriptor.kind === "s3") {
-    const client = getS3Client(descriptor);
-    try {
-      if (!descriptor.directory) {
-        await client.send(new DeleteObjectCommand({
-          Bucket: descriptor.bucket,
-          Key: descriptor.key,
-        }));
-        return;
-      }
-      const prefix = String(descriptor.key || "");
-      if (!prefix) throw new HttpError(403, "不允许删除整个 Bucket");
-      while (true) {
-        const listed = await client.send(new ListObjectsV2Command({
-          Bucket: descriptor.bucket,
-          Prefix: prefix,
-          MaxKeys: 1000,
-        }));
-        const objects = (listed.Contents || [])
-          .filter((item) => item.Key)
-          .map((item) => ({ Key: item.Key }));
-        if (!objects.length) break;
-        const deletion = await client.send(new DeleteObjectsCommand({
-          Bucket: descriptor.bucket,
-          Delete: { Objects: objects, Quiet: true },
-        }));
-        if (deletion.Errors?.length) {
-          throw new Error(
-            deletion.Errors.map((item) => item.Message || item.Code).join("; "),
-          );
-        }
-      }
-      return;
-    } catch (error) {
-      if (error instanceof HttpError) throw error;
-      throw new HttpError(502, `对象存储删除失败：${error.message || error}`);
-    }
+    throw new HttpError(403, "S3/OSS 使用只读模式，不能删除文件或目录");
   }
   throw new HttpError(400, "当前来源不支持删除");
 }
@@ -2189,6 +2241,23 @@ async function handleRequest(request, response) {
     if (request.method !== "POST") throw new HttpError(405, "删除只支持 POST 请求");
     const body = await readJsonBody(request);
     sendJson(response, 200, await deleteEntries(body.ids));
+    return;
+  }
+
+  if (url.pathname === "/api/download-selection" && request.method === "POST") {
+    const body = await readJsonBody(request, 1024 * 1024);
+    sendJson(response, 200, { id: createDownloadSelection(body.ids) });
+    return;
+  }
+
+  if (url.pathname === "/api/download-selection" && request.method === "GET") {
+    const id = url.searchParams.get("id") || "";
+    const selection = downloadSelections.get(id);
+    downloadSelections.delete(id);
+    if (!selection || selection.expiresAt < Date.now()) {
+      throw new HttpError(404, "下载选择已失效，请重新选择");
+    }
+    await streamSelectedZip(response, selection.descriptors);
     return;
   }
 

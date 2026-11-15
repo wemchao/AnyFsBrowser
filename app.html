@@ -184,7 +184,8 @@
                 <input id="uploadDirectoryInput" class="hidden" type="file"
                   webkitdirectory directory multiple>
               </div>
-              <button id="downloadDirectoryButton" class="secondary" type="button">↓ 下载目录</button>
+              <button id="downloadDirectoryButton" class="secondary" type="button"
+                title="请先选择文件或目录" disabled>↓ 下载</button>
               <button id="favoriteButton" class="secondary" type="button">☆ 收藏路径</button>
             </div>
           </div>
@@ -203,6 +204,8 @@
             <span>可以从左侧继续进入子目录。</span>
           </div>
           <div id="galleryGrid" class="gallery-grid"></div>
+          <div id="marqueeSelection" class="marquee-selection hidden"
+            aria-hidden="true"></div>
         </div>
       </section>
 

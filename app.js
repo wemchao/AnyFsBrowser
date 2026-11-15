@@ -37,6 +37,8 @@ const state = {
   textEditMode: false,
   textSaveMode: "manual",
   textDefaultMode: "edit",
+  maxPreviewBytes: 256 * 1024 * 1024,
+  maxTextPreviewBytes: 2 * 1024 * 1024,
   textDirty: false,
   textSaving: false,
   textEditVersion: 0,
@@ -44,6 +46,8 @@ const state = {
   viewer: null,
   viewerRequestId: 0,
   viewerImageUrl: "",
+  viewerObjectUrl: "",
+  viewerFetchController: null,
   readyThumbnails: new Set(),
   thumbnailObserver: null,
   filePreviewController: null,
@@ -51,6 +55,7 @@ const state = {
   uploadPickerTarget: null,
   selectedItems: new Map(),
   selectionAnchorId: null,
+  gallerySelectionItems: new Map(),
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -97,6 +102,7 @@ const elements = {
   galleryTitle: $("#galleryTitle"),
   imageCount: $("#imageCount"),
   galleryGrid: $("#galleryGrid"),
+  marqueeSelection: $("#marqueeSelection"),
   galleryLoading: $("#galleryLoading"),
   galleryEmpty: $("#galleryEmpty"),
   fileWorkspace: $(".file-workspace"),
@@ -492,6 +498,7 @@ async function copyPath(value, type) {
 }
 
 function selectionItemForEntry(entry, node) {
+  const descriptor = decodeEntryDescriptor(entry.id);
   return {
     id: entry.id,
     name: entry.name || entry.relativePath,
@@ -499,17 +506,20 @@ function selectionItemForEntry(entry, node) {
     entry,
     node,
     directory: false,
+    deletable: Boolean(descriptor && !["archive", "s3"].includes(descriptor.kind)),
   };
 }
 
 function selectionItemForNode(node) {
   if (!node?.id) return null;
+  const descriptor = decodeEntryDescriptor(node.id);
   return {
     id: node.id,
     name: node.name || node.source,
     path: copyPathValue(node.source),
     node,
     directory: true,
+    deletable: Boolean(descriptor && !["archive", "s3"].includes(descriptor.kind)),
   };
 }
 
@@ -517,6 +527,12 @@ function syncSelectionUI() {
   const count = state.selectedItems.size;
   elements.selectionActions.classList.toggle("hidden", count === 0);
   elements.selectionCount.textContent = `已选择 ${count} 项`;
+  elements.downloadDirectoryButton.disabled = count === 0;
+  elements.downloadDirectoryButton.title =
+    count > 0 ? `下载选中的 ${count} 项` : "请先选择文件或目录";
+  const allDeletable =
+    count > 0 && [...state.selectedItems.values()].every((item) => item.deletable);
+  elements.deleteSelectedButton.classList.toggle("hidden", !allDeletable);
   document.querySelectorAll("[data-selection-id]").forEach((element) => {
     const selected = state.selectedItems.has(element.dataset.selectionId);
     if (element.classList.contains("image-card")) {
@@ -571,6 +587,46 @@ async function copySelectedPaths() {
   showToast(`已复制 ${paths.length} 个路径`);
 }
 
+async function downloadSelectedItems() {
+  const items = [...state.selectedItems.values()];
+  if (!items.length) {
+    showToast("请先选择要下载的文件或目录");
+    return;
+  }
+  if (items.length === 1) {
+    const [item] = items;
+    if (item.directory) downloadDirectoryNode(item.node);
+    else {
+      triggerDownload(
+        apiUrl("/api/file", { id: item.id, download: "1" }),
+        item.name || "download",
+      );
+    }
+    return;
+  }
+  try {
+    elements.downloadDirectoryButton.disabled = true;
+    elements.downloadDirectoryButton.textContent = "准备下载…";
+    const result = await apiPost("/api/download-selection", {
+      ids: items.map((item) => item.id),
+    });
+    triggerDownload(
+      apiUrl("/api/download-selection", { id: result.id }),
+      "AnyFs-selected.zip",
+    );
+  } catch (error) {
+    showToast(`下载失败：${error.message}`);
+  } finally {
+    elements.downloadDirectoryButton.disabled = false;
+    elements.downloadDirectoryButton.textContent = "↓ 下载";
+  }
+}
+
+function selectedItemsCanDelete() {
+  return state.selectedItems.size > 0 &&
+    [...state.selectedItems.values()].every((item) => item.deletable);
+}
+
 function nodeContainsNode(parent, child) {
   for (let current = child; current; current = current.parent) {
     if (current === parent) return true;
@@ -581,10 +637,13 @@ function nodeContainsNode(parent, child) {
 async function deleteSelectedItems() {
   const items = [...state.selectedItems.values()];
   if (!items.length) return;
+  if (items.some((item) => !item.deletable)) {
+    showToast("S3/OSS 与归档内部内容为只读，不能删除");
+    return;
+  }
   const names = items.slice(0, 4).map((item) => item.name).join("、");
   const suffix = items.length > 4 ? ` 等 ${items.length} 项` : "";
-  if (!confirm(`确定删除“${names}${suffix}”吗？`)) return;
-  if (!confirm("删除后无法恢复。请再次确认永久删除所选文件或目录。")) return;
+  if (!confirm(`确定永久删除“${names}${suffix}”吗？此操作无法恢复。`)) return;
 
   const deletedCurrentNode = items.find(
     (item) => item.directory && nodeContainsNode(item.node, state.selectedDirectory),
@@ -1265,6 +1324,8 @@ async function loadInterfaceStyle() {
   let textSaveMode;
   let textDefaultMode;
   let htmlDefaultViewMode;
+  let maxPreviewBytes;
+  let maxTextPreviewBytes;
   if (globalThis.chrome?.storage?.local) {
     const result = await chrome.storage.local.get([
       "interfaceStyle",
@@ -1274,6 +1335,8 @@ async function loadInterfaceStyle() {
       "textSaveMode",
       "textDefaultMode",
       "htmlDefaultViewMode",
+      "maxPreviewBytes",
+      "maxTextPreviewBytes",
     ]);
     style = result.interfaceStyle;
     sidebarWidth = result.sidebarWidth;
@@ -1282,6 +1345,8 @@ async function loadInterfaceStyle() {
     textSaveMode = result.textSaveMode;
     textDefaultMode = result.textDefaultMode;
     htmlDefaultViewMode = result.htmlDefaultViewMode;
+    maxPreviewBytes = result.maxPreviewBytes;
+    maxTextPreviewBytes = result.maxTextPreviewBytes;
   } else {
     style = localStorage.getItem("interfaceStyle");
     sidebarWidth = Number(localStorage.getItem("sidebarWidth"));
@@ -1290,6 +1355,8 @@ async function loadInterfaceStyle() {
     textSaveMode = localStorage.getItem("textSaveMode");
     textDefaultMode = localStorage.getItem("textDefaultMode");
     htmlDefaultViewMode = localStorage.getItem("htmlDefaultViewMode");
+    maxPreviewBytes = localStorage.getItem("maxPreviewBytes");
+    maxTextPreviewBytes = localStorage.getItem("maxTextPreviewBytes");
   }
   applyInterfaceStyle(style);
   if (Number.isFinite(sidebarWidth) && sidebarWidth > 0) {
@@ -1302,6 +1369,15 @@ async function loadInterfaceStyle() {
   state.textSaveMode = textSaveMode === "auto" ? "auto" : "manual";
   state.textDefaultMode = textDefaultMode === "read" ? "read" : "edit";
   state.htmlDefaultViewMode = htmlDefaultViewMode === "source" ? "source" : "rendered";
+  state.maxPreviewBytes =
+    (maxPreviewBytes !== null && maxPreviewBytes !== undefined) &&
+      (Number(maxPreviewBytes) === 0 || Number(maxPreviewBytes) >= 16 * 1024 * 1024)
+      ? Number(maxPreviewBytes)
+      : 256 * 1024 * 1024;
+  state.maxTextPreviewBytes =
+    Number(maxTextPreviewBytes) >= 1024 * 1024
+      ? Number(maxTextPreviewBytes)
+      : 2 * 1024 * 1024;
   elements.textSaveMode.value = state.textSaveMode;
 }
 
@@ -1384,6 +1460,74 @@ function setupSidebarResizer() {
     const value = applySidebarWidth(current + (event.key === "ArrowLeft" ? -16 : 16));
     await saveSidebarWidth(value);
   });
+}
+
+function setupGalleryMarqueeSelection() {
+  let drag = null;
+  elements.fileWorkspace.addEventListener("pointerdown", (event) => {
+    if (
+      event.button !== 0 ||
+      elements.galleryView.classList.contains("hidden") ||
+      event.target.closest(
+        ".image-card, .gallery-toolbar, button, input, select, textarea, a",
+      )
+    ) return;
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    drag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      initial: additive ? new Map(state.selectedItems) : new Map(),
+      moved: false,
+    };
+    if (!additive) clearSelection();
+    elements.fileWorkspace.setPointerCapture(event.pointerId);
+    document.body.classList.add("marquee-selecting");
+    event.preventDefault();
+  });
+
+  elements.fileWorkspace.addEventListener("pointermove", (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const left = Math.min(drag.startX, event.clientX);
+    const top = Math.min(drag.startY, event.clientY);
+    const right = Math.max(drag.startX, event.clientX);
+    const bottom = Math.max(drag.startY, event.clientY);
+    if (!drag.moved && Math.hypot(right - left, bottom - top) < 4) return;
+    drag.moved = true;
+    Object.assign(elements.marqueeSelection.style, {
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${right - left}px`,
+      height: `${bottom - top}px`,
+    });
+    elements.marqueeSelection.classList.remove("hidden");
+    state.selectedItems = new Map(drag.initial);
+    elements.galleryGrid.querySelectorAll(".image-card").forEach((card) => {
+      const rect = card.getBoundingClientRect();
+      if (
+        rect.right >= left &&
+        rect.left <= right &&
+        rect.bottom >= top &&
+        rect.top <= bottom
+      ) {
+        const item = state.gallerySelectionItems.get(card.dataset.selectionId);
+        if (item) state.selectedItems.set(item.id, item);
+      }
+    });
+    syncSelectionUI();
+  });
+
+  const finish = (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (elements.fileWorkspace.hasPointerCapture(event.pointerId)) {
+      elements.fileWorkspace.releasePointerCapture(event.pointerId);
+    }
+    drag = null;
+    elements.marqueeSelection.classList.add("hidden");
+    document.body.classList.remove("marquee-selecting");
+  };
+  elements.fileWorkspace.addEventListener("pointerup", finish);
+  elements.fileWorkspace.addEventListener("pointercancel", finish);
 }
 
 async function loadSystemInfo() {
@@ -1853,8 +1997,7 @@ function updateSelectedDirectory(node, updateRoute = true) {
     elements.uploadMenu.classList.add("hidden");
     elements.uploadStatus.classList.add("hidden");
   }
-  elements.downloadDirectoryButton.textContent =
-    archiveDirectory && !node.archivePath ? "↓ 下载归档" : "↓ 下载目录";
+  elements.downloadDirectoryButton.textContent = "↓ 下载";
   renderDirectoryTree();
   renderGallery();
   if (!syntheticRoot) syncFavoriteButton();
@@ -2203,11 +2346,13 @@ function renderDirectoryTree() {
           label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
           action: copySelectedPaths,
         },
-        {
+      );
+      if (selectedItemsCanDelete()) {
+        items.push({
           label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
           action: deleteSelectedItems,
-        },
-      );
+        });
+      }
       showTreeContextMenu(event, items);
     });
     fragment.append(row);
@@ -2342,16 +2487,16 @@ function renderDirectoryTree() {
         { label: "下载目录", action: () => downloadDirectoryNode(node) },
       );
       if (selectionItem) {
-        items.push(
-          {
-            label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
-            action: copySelectedPaths,
-          },
-          {
+        items.push({
+          label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
+          action: copySelectedPaths,
+        });
+        if (selectedItemsCanDelete()) {
+          items.push({
             label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
             action: deleteSelectedItems,
-          },
-        );
+          });
+        }
       } else {
         items.push({ label: "复制路径", action: () => copyPath(node.source, "目录") });
       }
@@ -2434,7 +2579,7 @@ async function openSource(source, force = false, options = {}) {
     const rootEntries = result.images;
     if (result.targetType === "directory") {
       elements.downloadDirectoryButton.classList.remove("hidden");
-      elements.downloadDirectoryButton.textContent = "↓ 下载目录";
+      elements.downloadDirectoryButton.textContent = "↓ 下载";
       elements.uploadActions.classList.toggle("hidden", state.sourceMode !== "ssh");
       state.directoryRoot = createDirectoryRoot(cleanSource, rootEntries);
       state.selectedDirectory = state.directoryRoot;
@@ -2563,6 +2708,7 @@ function renderGallery() {
     (entry) => selectionItemForEntry(entry, state.selectedDirectory),
   );
   const selectionItemsById = new Map(selectionItems.map((item) => [item.id, item]));
+  state.gallerySelectionItems = selectionItemsById;
   state.visibleEntries.forEach((entry) => {
     const selectionItem = selectionItemsById.get(entry.id);
     if (state.selectedItems.has(entry.id)) {
@@ -2656,17 +2802,20 @@ function renderGallery() {
       card.addEventListener("contextmenu", (event) => {
         if (!state.selectedItems.has(entry.id)) selectOnlyItem(selectionItem);
         const selectedCount = state.selectedItems.size;
-        showTreeContextMenu(event, [
+        const items = [
           { label: "打开", action: openEntry },
           {
             label: selectedCount > 1 ? `复制 ${selectedCount} 个路径` : "复制路径",
             action: copySelectedPaths,
           },
-          {
+        ];
+        if (selectedItemsCanDelete()) {
+          items.push({
             label: selectedCount > 1 ? `删除 ${selectedCount} 项` : "删除",
             action: deleteSelectedItems,
-          },
-        ]);
+          });
+        }
+        showTreeContextMenu(event, items);
       });
     } else {
       card.addEventListener("contextmenu", () => {
@@ -2774,6 +2923,20 @@ function formattedFileKind(entry) {
     return "code";
   }
   return "generic";
+}
+
+function isTextPreviewKind(kind) {
+  return ["markdown", "json", "code", "html", "generic"].includes(kind);
+}
+
+function previewLimitForKind(kind) {
+  return isTextPreviewKind(kind)
+    ? state.maxTextPreviewBytes
+    : state.maxPreviewBytes;
+}
+
+function exceedsPreviewLimit(size, limit) {
+  return Number.isFinite(size) && limit > 0 && size > limit;
 }
 
 function codeLanguage(entry) {
@@ -3551,6 +3714,21 @@ function showUnsupportedBinary(entry) {
   elements.officePreview.classList.remove("hidden");
 }
 
+function showLargeFileNotice(entry, limit, textFile) {
+  const notice = document.createElement("div");
+  notice.className = "office-legacy-notice";
+  const title = document.createElement("strong");
+  title.textContent = "文件过大，已停止自动预览";
+  const detail = document.createElement("span");
+  detail.textContent =
+    `${entry.name || "该文件"} 的大小为 ${formatBytes(entry.size)}，` +
+    `超过${textFile ? "文本" : "通用"}预览上限 ${formatBytes(limit)}。` +
+    "可在通用设置调整限制，或使用右上角“下载文件”获取原文件。";
+  notice.append(title, detail);
+  elements.officePreview.replaceChildren(notice);
+  elements.officePreview.classList.remove("hidden");
+}
+
 async function openFileViewer(entry) {
   clearTextAutoSave();
   state.textEditMode = false;
@@ -3574,7 +3752,7 @@ async function openFileViewer(entry) {
   state.filePreviewController = controller;
   const url = apiUrl("/api/file", { id: entry.id });
   const kind = formattedFileKind(entry);
-  const editableText = ["markdown", "json", "code", "html", "generic"].includes(kind);
+  const editableText = isTextPreviewKind(kind);
   const capabilitiesPromise = editableText
     ? api("/api/file-capabilities", { id: entry.id }).catch(() => ({ writable: false }))
     : Promise.resolve({ writable: false });
@@ -3615,6 +3793,19 @@ async function openFileViewer(entry) {
   elements.videoPlayer.load();
   elements.formattedFileError.classList.add("hidden");
 
+  const previewLimit = previewLimitForKind(kind);
+  if (exceedsPreviewLimit(entry.size, previewLimit)) {
+    elements.fileFrame.src = "about:blank";
+    elements.fileFrame.classList.add("hidden");
+    elements.formattedFilePreview.classList.remove("hidden");
+    elements.formattedFilePreview.classList.remove("video-mode");
+    elements.markdownLayoutControls.classList.add("hidden");
+    elements.htmlViewControls.classList.add("hidden");
+    elements.formattedFileLoading.classList.add("hidden");
+    showLargeFileNotice(entry, previewLimit, editableText);
+    return;
+  }
+
   if (browserPreview) {
     elements.fileFrame.removeAttribute("sandbox");
     delete elements.fileFrame.dataset.renderEntry;
@@ -3649,10 +3840,27 @@ async function openFileViewer(entry) {
     const response = await fetch(url, {
       signal: controller.signal,
       ...(genericPreview
-        ? { headers: { Range: "bytes=0-4194303" } }
+        ? {
+          headers: {
+            Range: `bytes=0-${Math.max(0, state.maxTextPreviewBytes - 1)}`,
+          },
+        }
         : {}),
     });
     if (!response.ok) throw new Error(`文件读取失败 (${response.status})`);
+    const contentRangeTotal = Number(
+      response.headers.get("Content-Range")?.match(/\/(\d+)$/)?.[1],
+    );
+    const responseSize = Number.isFinite(contentRangeTotal)
+      ? contentRangeTotal
+      : Number(response.headers.get("Content-Length"));
+    if (exceedsPreviewLimit(responseSize, previewLimit)) {
+      await response.body?.cancel().catch(() => {});
+      entry.size = responseSize;
+      showLargeFileNotice(entry, previewLimit, editableText);
+      elements.formattedFileLoading.classList.add("hidden");
+      return;
+    }
     const isOffice = ["docx", "xlsx", "pptx"].includes(kind);
     const content = isOffice || genericPreview
       ? await response.arrayBuffer()
@@ -3694,7 +3902,10 @@ async function openFileViewer(entry) {
           entry,
           text,
           "plaintext",
-          truncated ? "文件较大，仅显示前 4 MB；可使用右上角下载完整文件。" : "",
+          truncated
+            ? `文件较大，仅显示前 ${formatBytes(state.maxTextPreviewBytes)}；` +
+              "可使用右上角下载完整文件。"
+            : "",
         );
       }
     } else if (isOffice) {
@@ -3790,10 +4001,73 @@ function browserMaxImageDimension() {
   return browserMaxImageDimension.cached;
 }
 
+function releaseViewerObjectUrl() {
+  state.viewerFetchController?.abort();
+  state.viewerFetchController = null;
+  if (state.viewerObjectUrl) URL.revokeObjectURL(state.viewerObjectUrl);
+  state.viewerObjectUrl = "";
+}
+
+async function receiveViewerImage(url, requestId) {
+  releaseViewerObjectUrl();
+  const controller = new AbortController();
+  state.viewerFetchController = controller;
+  const response = await fetch(url, {
+    signal: controller.signal,
+    cache: "force-cache",
+  });
+  if (!response.ok) throw new Error(`清晰图片接收失败 (${response.status})`);
+  const total = Number(response.headers.get("Content-Length")) || 0;
+  if (!response.body) {
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    state.viewerObjectUrl = objectUrl;
+    return objectUrl;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  let lastBytes = 0;
+  let lastTime = performance.now();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (requestId !== state.viewerRequestId) {
+      controller.abort();
+      throw new DOMException("图片浏览已取消", "AbortError");
+    }
+    chunks.push(value);
+    received += value.byteLength;
+    const now = performance.now();
+    if (lastBytes === 0 || now - lastTime >= 250) {
+      const bytesPerSecond =
+        (received - lastBytes) * 1000 / Math.max(1, now - lastTime);
+      elements.viewerLoadingText.textContent =
+        `正在接收清晰图片：${formatBytes(received)}` +
+        `${total ? ` / ${formatBytes(total)}` : ""} · ` +
+        `${formatBytes(bytesPerSecond)}/s`;
+      lastBytes = received;
+      lastTime = now;
+    }
+  }
+  if (requestId !== state.viewerRequestId) {
+    throw new DOMException("图片浏览已取消", "AbortError");
+  }
+  const blob = new Blob(chunks, {
+    type: response.headers.get("Content-Type") || "application/octet-stream",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  state.viewerObjectUrl = objectUrl;
+  state.viewerFetchController = null;
+  return objectUrl;
+}
+
 async function openViewer(recoveryAttempt = 0) {
   const image = state.images[state.currentIndex];
   if (!image) return;
   const requestId = ++state.viewerRequestId;
+  releaseViewerObjectUrl();
   state.viewerImageUrl = "";
   state.currentTreeFileId = image.id;
   if (state.directoryRoot) renderDirectoryTree();
@@ -3821,6 +4095,16 @@ async function openViewer(recoveryAttempt = 0) {
     `${state.currentIndex + 1} / ${state.images.length} · ${formatBytes(image.size)}`;
 
   const viewer = createViewer();
+  if (exceedsPreviewLimit(image.size, state.maxPreviewBytes)) {
+    elements.viewerLoading.classList.add("hidden");
+    elements.viewerNotice.classList.add("hidden");
+    elements.viewerError.textContent =
+      `图片大小为 ${formatBytes(image.size)}，超过通用预览上限 ` +
+      `${formatBytes(state.maxPreviewBytes)}。可在通用设置调整限制，` +
+      "或使用右键菜单下载原图。";
+    elements.viewerError.classList.remove("hidden");
+    return;
+  }
   if (state.readyThumbnails.has(image.id)) {
     viewer.open({
       type: "image",
@@ -3848,7 +4132,6 @@ async function openViewer(recoveryAttempt = 0) {
     const imageUrl = prepared.resized
       ? apiUrl(`/api/browser-image/${prepared.key}.${prepared.format}`)
       : apiUrl("/api/file", { id: image.id });
-    state.viewerImageUrl = imageUrl;
     const dimensions = prepared.resized
       ? `${prepared.originalWidth} × ${prepared.originalHeight} → ` +
         `${prepared.width} × ${prepared.height}`
@@ -3863,7 +4146,14 @@ async function openViewer(recoveryAttempt = 0) {
         `${prepared.width}×${prepared.height}`
       )
       : "";
-    elements.viewerLoadingText.textContent = "正在加载清晰图片…";
+    elements.viewerLoadingText.textContent = "正在接收清晰图片…";
+    const receivedImageUrl = await receiveViewerImage(imageUrl, requestId);
+    if (
+      requestId !== state.viewerRequestId ||
+      elements.viewerView.classList.contains("hidden")
+    ) return;
+    state.viewerImageUrl = receivedImageUrl;
+    elements.viewerLoadingText.textContent = "正在解码清晰图片…";
     const removePreparedHandlers = () => {
       viewer.removeHandler("open", handlePreparedOpen);
       viewer.removeHandler("open-failed", handlePreparedFailure);
@@ -3899,11 +4189,24 @@ async function openViewer(recoveryAttempt = 0) {
     viewer.addHandler("open-failed", handlePreparedFailure);
     viewer.open({
       type: "image",
-      url: imageUrl,
+      url: receivedImageUrl,
       buildPyramid: false,
     });
   } catch (error) {
     if (requestId !== state.viewerRequestId) return;
+    if (error.name === "AbortError") return;
+    if (recoveryAttempt < 3 && IS_EXTENSION) {
+      elements.viewerLoading.classList.remove("hidden");
+      elements.viewerLoadingText.textContent =
+        `图片接收中断，正在恢复（${recoveryAttempt + 1}/3）…`;
+      if (await connectServer(true)) {
+        await delay(300 * (recoveryAttempt + 1));
+        if (requestId === state.viewerRequestId) {
+          openViewer(recoveryAttempt + 1);
+        }
+        return;
+      }
+    }
     elements.viewerLoading.classList.add("hidden");
     elements.viewerError.textContent = state.readyThumbnails.has(image.id)
       ? `清晰图片加载失败，当前显示缩略图：${error.message}`
@@ -3915,6 +4218,7 @@ async function openViewer(recoveryAttempt = 0) {
 function closeViewer(updateRoute = true) {
   if (elements.viewerView.classList.contains("hidden")) return;
   state.viewerRequestId += 1;
+  releaseViewerObjectUrl();
   state.viewerImageUrl = "";
   state.viewer?.close();
   elements.viewerView.classList.add("hidden");
@@ -4054,9 +4358,7 @@ elements.uploadDirectoryInput.addEventListener("change", async () => {
   elements.uploadDirectoryInput.value = "";
   await uploadFilesToSshNode(target, items);
 });
-elements.downloadDirectoryButton.addEventListener("click", () => {
-  downloadDirectoryNode(state.selectedDirectory);
-});
+elements.downloadDirectoryButton.addEventListener("click", downloadSelectedItems);
 elements.copySelectedPathsButton.addEventListener("click", copySelectedPaths);
 elements.deleteSelectedButton.addEventListener("click", deleteSelectedItems);
 elements.clearSelectionButton.addEventListener("click", clearSelection);
@@ -4285,9 +4587,22 @@ globalThis.chrome?.storage?.onChanged?.addListener((changes, area) => {
     state.htmlDefaultViewMode =
       changes.htmlDefaultViewMode.newValue === "source" ? "source" : "rendered";
   }
+  if (area === "local" && changes.maxPreviewBytes) {
+    const value = Number(changes.maxPreviewBytes.newValue);
+    state.maxPreviewBytes =
+      value === 0 || value >= 16 * 1024 * 1024
+        ? value
+        : 256 * 1024 * 1024;
+  }
+  if (area === "local" && changes.maxTextPreviewBytes) {
+    const value = Number(changes.maxTextPreviewBytes.newValue);
+    state.maxTextPreviewBytes =
+      value >= 1024 * 1024 ? value : 2 * 1024 * 1024;
+  }
 });
 
 setupSidebarResizer();
+setupGalleryMarqueeSelection();
 connectImageContextMenu();
 
 async function init() {

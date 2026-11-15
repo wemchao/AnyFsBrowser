@@ -11,6 +11,8 @@ const textDefaultModeInputs = [
 const textSaveModeInputs = [
   ...document.querySelectorAll('input[name="textSaveMode"]'),
 ];
+const maxPreviewBytes = document.querySelector("#maxPreviewBytes");
+const maxTextPreviewBytes = document.querySelector("#maxTextPreviewBytes");
 const homeButton = document.querySelector("#settingsHomeButton");
 const backButton = document.querySelector("#settingsBackButton");
 const notice = document.querySelector("#savedNotice");
@@ -23,6 +25,8 @@ function storageGet() {
       "htmlDefaultViewMode",
       "textDefaultMode",
       "textSaveMode",
+      "maxPreviewBytes",
+      "maxTextPreviewBytes",
     ]);
   }
   return Promise.resolve({
@@ -31,6 +35,8 @@ function storageGet() {
     htmlDefaultViewMode: localStorage.getItem("htmlDefaultViewMode"),
     textDefaultMode: localStorage.getItem("textDefaultMode"),
     textSaveMode: localStorage.getItem("textSaveMode"),
+    maxPreviewBytes: localStorage.getItem("maxPreviewBytes"),
+    maxTextPreviewBytes: localStorage.getItem("maxTextPreviewBytes"),
   });
 }
 
@@ -89,6 +95,12 @@ async function init() {
   selectHtmlViewMode(result.htmlDefaultViewMode);
   selectTextDefaultMode(result.textDefaultMode);
   selectTextSaveMode(result.textSaveMode);
+  maxPreviewBytes.value = String(
+    result.maxPreviewBytes ?? 256 * 1024 * 1024,
+  );
+  maxTextPreviewBytes.value = String(
+    result.maxTextPreviewBytes ?? 2 * 1024 * 1024,
+  );
 }
 
 for (const input of inputs) {
@@ -135,6 +147,16 @@ for (const input of textSaveModeInputs) {
     showSavedNotice();
   });
 }
+
+maxPreviewBytes.addEventListener("change", async () => {
+  await storageSet({ maxPreviewBytes: Number(maxPreviewBytes.value) });
+  showSavedNotice();
+});
+
+maxTextPreviewBytes.addEventListener("change", async () => {
+  await storageSet({ maxTextPreviewBytes: Number(maxTextPreviewBytes.value) });
+  showSavedNotice();
+});
 
 homeButton.addEventListener("click", () => {
   location.href = globalThis.chrome?.runtime?.getURL

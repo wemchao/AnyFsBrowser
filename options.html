@@ -108,6 +108,42 @@
 
         <section class="settings-section">
           <div class="section-title">
+            <h2>预览大小限制</h2>
+            <p>超过限制的文件不会自动读取，可继续下载原文件。</p>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>通用预览上限</strong>
+              <span>适用于图片、视频、PDF、Office 和其他非文本文件</span>
+            </div>
+            <select id="maxPreviewBytes" class="settings-select"
+              aria-label="通用预览上限">
+              <option value="134217728">128 MB</option>
+              <option value="268435456">256 MB</option>
+              <option value="536870912">512 MB</option>
+              <option value="1073741824">1 GB</option>
+              <option value="2147483648">2 GB</option>
+              <option value="0">不限制</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>文本预览上限</strong>
+              <span>单独限制代码、Markdown、JSON、HTML 和未知文本，避免页面卡死</span>
+            </div>
+            <select id="maxTextPreviewBytes" class="settings-select"
+              aria-label="文本预览上限">
+              <option value="1048576">1 MB</option>
+              <option value="2097152">2 MB</option>
+              <option value="4194304">4 MB</option>
+              <option value="16777216">16 MB</option>
+              <option value="67108864">64 MB</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-title">
             <h2>文本编辑</h2>
             <p>适用于文本、代码、JSON、Markdown 和 HTML 文件。</p>
           </div>
