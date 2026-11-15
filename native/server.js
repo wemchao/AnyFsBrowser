@@ -20,6 +20,11 @@ const ZipStream = require("zip-stream").default;
 const sharp = require("sharp");
 const { RemoteAgentManager } = require("./remote-agent");
 
+sharp.concurrency(Math.max(
+  1,
+  Math.min(8, os.availableParallelism?.() || os.cpus().length || 1),
+));
+
 const NATIVE_MODE = process.argv.includes("--native");
 let PORT = NATIVE_MODE ? 0 : Number(process.env.IMAGE_VIEWER_PORT || 39281);
 const HOST = "127.0.0.1";
@@ -1524,38 +1529,12 @@ async function prepareBrowserImage(descriptor, requestedMaxDimension, progressId
     total: Number(descriptor.size) || 0,
     done: false,
   });
-  if (descriptor.kind === "ssh") {
-    updateBrowserImageProgress(progressId, {
-      phase: "remote",
-      label: "远程主机正在分析并准备图片",
-    });
-    const info = await remoteAgents.json(descriptor, "/image-info", {
-      path: descriptor.path,
-      maxDimension,
-    });
-    if (info.resized) {
-      const key = sha256(`${JSON.stringify(descriptor)}:${maxDimension}:${info.cacheName}`);
-      remoteBrowserImages.set(key, {
-        descriptor,
-        cacheName: info.cacheName,
-        format: info.format,
-      });
-      finishBrowserImageProgress(progressId, {
-        phase: "ready",
-        label: "远程清晰图已准备完成",
-      });
-      return { ...info, key };
-    }
-    finishBrowserImageProgress(progressId, {
-      phase: "ready",
-      label: "图片信息读取完成",
-    });
-    return info;
-  }
   const input = await materialize(descriptor, (received, total) => {
     updateBrowserImageProgress(progressId, {
       phase: "download",
-      label: "正在读取原始图片",
+      label: descriptor.kind === "ssh"
+        ? "正在从 SSH 拉取原图到本地缓存"
+        : "正在读取原始图片",
       received,
       total: Number(total) || Number(descriptor.size) || 0,
     });
