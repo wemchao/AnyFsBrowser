@@ -1,4 +1,11 @@
 const IS_EXTENSION = location.protocol === "chrome-extension:";
+const KNOWN_BINARY_EXTENSIONS = new Set([
+  "pth", "pt", "ckpt", "onnx", "safetensors", "npz", "npy",
+  "pkl", "pickle", "joblib", "h5", "hdf5", "parquet", "feather",
+  "arrow", "avro", "orc", "mat", "pb", "tflite", "weights", "bin",
+  "db", "sqlite", "sqlite3", "mdb", "accdb", "wasm", "class", "pyc",
+  "so", "dylib", "dll", "exe", "dmg", "iso",
+]);
 let SERVER =
   location.protocol === "http:" &&
   ["127.0.0.1", "localhost", "files.localhost"].includes(location.hostname)
@@ -2907,6 +2914,7 @@ function formattedFileKind(entry) {
   }
   if (["docx", "xlsx", "pptx"].includes(extension)) return extension;
   if (["doc", "xls", "ppt"].includes(extension)) return "office-legacy";
+  if (KNOWN_BINARY_EXTENSIONS.has(extension)) return "binary";
   if ([
     "txt", "text", "log", "xml", "css", "scss", "less",
     "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "java", "c", "h",
@@ -2987,6 +2995,7 @@ function formattedFileLabel(kind, entry) {
   if (kind === "browser") return "";
   if (kind === "code") return codeLanguage(entry).toLocaleUpperCase();
   if (kind === "office-legacy") return "OFFICE";
+  if (kind === "binary") return "BINARY";
   return kind.toLocaleUpperCase();
 }
 
@@ -3699,11 +3708,51 @@ function decodeGenericText(arrayBuffer) {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
+async function inspectGenericFile(url, signal) {
+  const response = await fetch(url, {
+    signal,
+    headers: { Range: "bytes=0-65535" },
+  });
+  if (!response.ok) throw new Error(`文件类型检测失败 (${response.status})`);
+  const totalSize = Number(
+    response.headers.get("Content-Range")?.match(/\/(\d+)$/)?.[1],
+  );
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const buffer = await response.arrayBuffer();
+    return {
+      binary: decodeGenericText(buffer.slice(0, 64 * 1024)) === null,
+      size: Number.isFinite(totalSize) ? totalSize : buffer.byteLength,
+    };
+  }
+  const chunks = [];
+  let length = 0;
+  while (length < 64 * 1024) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = 64 * 1024 - length;
+    const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    chunks.push(chunk);
+    length += chunk.byteLength;
+  }
+  await reader.cancel().catch(() => {});
+  const sample = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    sample.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return {
+    binary: decodeGenericText(sample.buffer) === null,
+    size: Number.isFinite(totalSize) ? totalSize : undefined,
+  };
+}
+
 function showUnsupportedBinary(entry) {
   const notice = document.createElement("div");
   notice.className = "office-legacy-notice";
   const title = document.createElement("strong");
-  title.textContent = "无法在编辑器中显示此二进制文件";
+  title.textContent = "此二进制文件不支持页面预览";
   const detail = document.createElement("span");
   detail.textContent =
     `${entry.name || "该文件"} 不是可直接显示的文本格式。` +
@@ -3750,7 +3799,19 @@ async function openFileViewer(entry) {
   const controller = new AbortController();
   state.filePreviewController = controller;
   const url = apiUrl("/api/file", { id: entry.id });
-  const kind = formattedFileKind(entry);
+  let kind = formattedFileKind(entry);
+  if (
+    kind === "generic" &&
+    (!Number.isFinite(entry.size) || entry.size > state.maxTextPreviewBytes)
+  ) {
+    try {
+      const inspection = await inspectGenericFile(url, controller.signal);
+      if (Number.isFinite(inspection.size)) entry.size = inspection.size;
+      if (inspection.binary) kind = "binary";
+    } catch (error) {
+      if (error.name === "AbortError") return;
+    }
+  }
   const editableText = isTextPreviewKind(kind);
   const capabilitiesPromise = editableText
     ? api("/api/file-capabilities", { id: entry.id }).catch(() => ({ writable: false }))
@@ -3830,6 +3891,11 @@ async function openFileViewer(entry) {
       "<span>请使用右上角“下载文件”保存原文件；DOCX、XLSX、PPTX 可直接预览。</span>";
     elements.officePreview.replaceChildren(notice);
     elements.officePreview.classList.remove("hidden");
+    elements.formattedFileLoading.classList.add("hidden");
+    return;
+  }
+  if (kind === "binary") {
+    showUnsupportedBinary(entry);
     elements.formattedFileLoading.classList.add("hidden");
     return;
   }
