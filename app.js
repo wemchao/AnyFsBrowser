@@ -612,7 +612,6 @@ async function downloadSelectedItems() {
     });
     triggerDownload(
       apiUrl("/api/download-selection", { id: result.id }),
-      "AnyFs-selected.zip",
     );
   } catch (error) {
     showToast(`下载失败：${error.message}`);

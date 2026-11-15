@@ -1329,10 +1329,45 @@ function uniqueSelectedName(descriptor, usedNames) {
   return name;
 }
 
+function selectedZipName(descriptors) {
+  if (!descriptors.length) return "files.zip";
+  const sourceKey = (descriptor) => {
+    if (descriptor.kind === "local") return "local";
+    if (descriptor.kind === "ssh") {
+      return `ssh:${descriptor.target}:${descriptor.port || 22}`;
+    }
+    if (descriptor.kind === "s3") return `s3:${descriptor.bucket}`;
+    return `archive:${encodeDescriptor(descriptor.archive)}`;
+  };
+  if (descriptors.some((item) => sourceKey(item) !== sourceKey(descriptors[0]))) {
+    return "AnyFs-selected.zip";
+  }
+  const parentPath = (descriptor) => {
+    const sourcePath = descriptorSourcePath(descriptor).replace(/\/+$/, "");
+    return descriptor.kind === "local"
+      ? path.dirname(sourcePath)
+      : path.posix.dirname(sourcePath);
+  };
+  const parents = descriptors.map(parentPath);
+  const splitPath = (value) => value.replaceAll("\\", "/").split("/").filter(Boolean);
+  const common = splitPath(parents[0]);
+  for (const parent of parents.slice(1)) {
+    const parts = splitPath(parent);
+    let length = 0;
+    while (length < common.length && common[length] === parts[length]) length += 1;
+    common.length = length;
+  }
+  const fallback = descriptors[0].kind === "s3"
+    ? descriptors[0].bucket
+    : "files";
+  const baseName = (common.at(-1) || fallback).replaceAll('"', "") || "files";
+  return `${baseName}.zip`;
+}
+
 async function streamSelectedZip(response, descriptors) {
   response.writeHead(200, {
     "Content-Type": "application/zip",
-    "Content-Disposition": attachmentDisposition("AnyFs-selected.zip"),
+    "Content-Disposition": attachmentDisposition(selectedZipName(descriptors)),
     "Cache-Control": "no-store",
   });
   const zip = new ZipStream({ level: 6 });
