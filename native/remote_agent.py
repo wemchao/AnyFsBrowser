@@ -258,6 +258,111 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self.send_json(500, {"error": str(error)})
 
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        query = self.authorized_query()
+        if query is None:
+            return
+        temporary = None
+        try:
+            if parsed.path not in {"/upload", "/save"}:
+                self.send_json(404, {"error": "not found"})
+                return
+            overwrite = parsed.path == "/save"
+            target = expand_path(query["path"][0])
+            parent = os.path.dirname(target)
+            if overwrite and not os.path.isfile(target):
+                self.send_json(404, {"error": "text file not found"})
+                return
+            if not overwrite:
+                os.makedirs(parent, exist_ok=True)
+            if not overwrite and os.path.exists(target):
+                self.send_json(409, {"error": f"file already exists: {os.path.basename(target)}"})
+                return
+            original_mode = os.stat(target).st_mode & 0o777 if overwrite else None
+            length = int(self.headers.get("Content-Length", "-1"))
+            if length < 0:
+                self.send_json(411, {"error": "Content-Length is required"})
+                return
+            if length > 50 * 1024 * 1024 * 1024:
+                self.send_json(413, {"error": "file is larger than 50 GB"})
+                return
+            temporary = os.path.join(
+                parent,
+                f".{os.path.basename(target)}.anyfs-{os.getpid()}-{threading.get_ident()}.tmp",
+            )
+            remaining = length
+            with open(temporary, "xb") as destination:
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise IOError("upload ended before Content-Length")
+                    destination.write(chunk)
+                    remaining -= len(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if original_mode is not None:
+                os.chmod(temporary, original_mode)
+            if overwrite:
+                os.replace(temporary, target)
+            else:
+                os.link(temporary, target)
+                os.unlink(temporary)
+            temporary = None
+            result = os.stat(target)
+            self.send_json(200 if overwrite else 201, {
+                "ok": True,
+                "path": target,
+                "name": os.path.basename(target),
+                "size": result.st_size,
+                "modified": result.st_mtime * 1000,
+            })
+        except FileExistsError:
+            self.send_json(409, {"error": "file already exists"})
+        except Exception as error:
+            self.send_json(500, {"error": str(error)})
+        finally:
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        query = self.authorized_query()
+        if query is None:
+            return
+        try:
+            if parsed.path != "/rename":
+                self.send_json(404, {"error": "not found"})
+                return
+            source = expand_path(query["path"][0])
+            new_name = query["name"][0]
+            if (
+                not new_name
+                or new_name in {".", ".."}
+                or "/" in new_name
+                or "\\" in new_name
+                or "\0" in new_name
+            ):
+                self.send_json(400, {"error": "invalid file name"})
+                return
+            destination = os.path.join(os.path.dirname(source), new_name)
+            if os.path.exists(destination):
+                self.send_json(409, {"error": f"file already exists: {new_name}"})
+                return
+            os.rename(source, destination)
+            self.send_json(200, {
+                "ok": True,
+                "path": destination,
+                "name": new_name,
+            })
+        except FileNotFoundError as error:
+            self.send_json(404, {"error": f"path not found: {error}"})
+        except Exception as error:
+            self.send_json(500, {"error": str(error)})
+
 
 def main():
     parser = argparse.ArgumentParser()

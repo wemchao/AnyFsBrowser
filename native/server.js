@@ -14,6 +14,7 @@ const {
   ListObjectsV2Command,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { fromIni } = require("@aws-sdk/credential-providers");
 const ZipStream = require("zip-stream").default;
@@ -1500,7 +1501,7 @@ function isTrustedAppRequest(request) {
 function setCors(request, response) {
   const origin = request.headers.origin;
   response.setHeader("Access-Control-Allow-Origin", isAppOrigin(origin) ? origin : "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
   response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   response.setHeader("Cache-Control", "no-store");
@@ -1528,6 +1529,23 @@ async function readJsonBody(request) {
   } catch {
     throw new HttpError(400, "JSON 配置格式不正确");
   }
+}
+
+async function readRequestBuffer(request, maximum = 64 * 1024 * 1024) {
+  const declaredLength = Number(request.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > maximum) {
+    throw new HttpError(413, "文本文件超过 64 MB，不能在页面内保存");
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maximum) {
+      throw new HttpError(413, "文本文件超过 64 MB，不能在页面内保存");
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
 }
 
 async function sendFile(
@@ -1633,6 +1651,176 @@ async function proxyS3File(request, response, descriptor, download = false) {
     : inlineDisposition(path.posix.basename(descriptor.key));
   response.writeHead(status, headers);
   await pipeline(result.Body, response);
+}
+
+function validateUploadRelativePath(value) {
+  const raw = String(value || "").normalize("NFC");
+  if (!raw || raw.includes("\\") || raw.includes("\0") || raw.startsWith("/")) {
+    throw new HttpError(400, "上传文件路径无效");
+  }
+  const segments = raw.split("/");
+  if (
+    segments.some((segment) => (
+      !segment ||
+      segment === "." ||
+      segment === ".." ||
+      Buffer.byteLength(segment) > 255
+    )) ||
+    Buffer.byteLength(raw) > 4096
+  ) {
+    throw new HttpError(400, "上传文件路径无效");
+  }
+  return segments.join("/");
+}
+
+async function uploadSshFile(request, source, fileName) {
+  if (source.kind !== "ssh") {
+    throw new HttpError(400, "当前目录不是 SSH 目录");
+  }
+  const contentLength = Number(request.headers["content-length"]);
+  if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+    throw new HttpError(411, "上传请求缺少有效的文件大小");
+  }
+  if (contentLength > 50 * 1024 * 1024 * 1024) {
+    throw new HttpError(413, "单个上传文件不能超过 50 GB");
+  }
+  const relativePath = validateUploadRelativePath(fileName);
+  const remotePath = path.posix.join(source.path, relativePath);
+  const remoteResponse = await remoteAgents.fetch(
+    source,
+    "/upload",
+    { path: remotePath },
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": request.headers["content-type"] || "application/octet-stream",
+        "Content-Length": String(contentLength),
+      },
+      body: request,
+      duplex: "half",
+    },
+    false,
+  );
+  const result = await remoteResponse.json().catch(() => ({}));
+  if (!remoteResponse.ok) {
+    throw new HttpError(
+      remoteResponse.status,
+      result.error || `SSH 上传失败 (${remoteResponse.status})`,
+    );
+  }
+  return result;
+}
+
+async function renameSshEntry(source, newName) {
+  if (source.kind !== "ssh") {
+    throw new HttpError(400, "只有 SSH 文件或目录支持重命名");
+  }
+  const name = validateUploadRelativePath(newName);
+  if (name.includes("/")) throw new HttpError(400, "新名称不能包含路径分隔符");
+  const remoteResponse = await remoteAgents.fetch(
+    source,
+    "/rename",
+    { path: source.path, name },
+    { method: "POST" },
+  );
+  const result = await remoteResponse.json().catch(() => ({}));
+  if (!remoteResponse.ok) {
+    throw new HttpError(
+      remoteResponse.status,
+      result.error || `SSH 重命名失败 (${remoteResponse.status})`,
+    );
+  }
+  return result;
+}
+
+async function saveTextFile(descriptor, content, contentType) {
+  if (descriptor.directory || descriptor.kind === "archive") {
+    throw new HttpError(400, "该文件是只读的，不能保存");
+  }
+  if (descriptor.kind === "local") {
+    const stat = await fsp.stat(descriptor.path).catch(() => null);
+    if (!stat?.isFile()) throw new HttpError(404, "文本文件不存在");
+    const temporary =
+      `${descriptor.path}.anyfs-${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
+    let handle;
+    try {
+      handle = await fsp.open(temporary, "wx", stat.mode & 0o777);
+      await handle.writeFile(content);
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await fsp.rename(temporary, descriptor.path);
+    } finally {
+      await handle?.close().catch(() => {});
+      await fsp.rm(temporary, { force: true }).catch(() => {});
+    }
+    const updated = await fsp.stat(descriptor.path);
+    return {
+      id: encodeDescriptor({
+        ...descriptor,
+        size: updated.size,
+        modified: updated.mtimeMs,
+      }),
+      size: updated.size,
+      modified: updated.mtimeMs,
+    };
+  }
+  if (descriptor.kind === "ssh") {
+    const remoteResponse = await remoteAgents.fetch(
+      descriptor,
+      "/save",
+      { path: descriptor.path },
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": contentType,
+          "Content-Length": String(content.length),
+        },
+        body: content,
+      },
+    );
+    const result = await remoteResponse.json().catch(() => ({}));
+    if (!remoteResponse.ok) {
+      throw new HttpError(
+        remoteResponse.status,
+        result.error || `SSH 文件保存失败 (${remoteResponse.status})`,
+      );
+    }
+    return {
+      id: encodeDescriptor({
+        ...descriptor,
+        size: result.size,
+        modified: result.modified,
+      }),
+      size: result.size,
+      modified: result.modified,
+    };
+  }
+  if (descriptor.kind === "s3") {
+    try {
+      const result = await getS3Client(descriptor).send(new PutObjectCommand({
+        Bucket: descriptor.bucket,
+        Key: descriptor.key,
+        Body: content,
+        ContentLength: content.length,
+        ContentType: contentType,
+      }));
+      const modified = Date.now();
+      return {
+        id: encodeDescriptor({
+          ...descriptor,
+          size: content.length,
+          modified,
+          etag: result.ETag,
+        }),
+        size: content.length,
+        modified,
+      };
+    } catch (error) {
+      throw new HttpError(502, `对象存储保存失败：${error.message || error}`);
+    }
+  }
+  throw new HttpError(400, "当前来源不支持保存");
 }
 
 function contentTypeFor(filePath) {
@@ -1826,6 +2014,40 @@ async function handleRequest(request, response) {
 
   if (url.searchParams.get("token") !== SESSION_TOKEN) {
     throw new HttpError(401, "会话已失效，请刷新插件页面");
+  }
+
+  if (url.pathname === "/api/ssh/upload") {
+    if (request.method !== "PUT") throw new HttpError(405, "上传只支持 PUT 请求");
+    const source = parseSource(url.searchParams.get("source") || "");
+    const result = await uploadSshFile(
+      request,
+      source,
+      url.searchParams.get("name") || "",
+    );
+    sendJson(response, 201, result);
+    return;
+  }
+
+  if (url.pathname === "/api/ssh/rename") {
+    if (request.method !== "POST") throw new HttpError(405, "重命名只支持 POST 请求");
+    const body = await readJsonBody(request);
+    const source = parseSource(body.source || "");
+    const result = await renameSshEntry(source, body.newName || "");
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (url.pathname === "/api/file/save") {
+    if (request.method !== "PUT") throw new HttpError(405, "保存只支持 PUT 请求");
+    const descriptor = decodeDescriptor(url.searchParams.get("id"));
+    const content = await readRequestBuffer(request);
+    const result = await saveTextFile(
+      descriptor,
+      content,
+      request.headers["content-type"] || "text/plain; charset=utf-8",
+    );
+    sendJson(response, 200, { ok: true, ...result });
+    return;
   }
 
   if (url.pathname === "/api/download-directory" && request.method === "GET") {

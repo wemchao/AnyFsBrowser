@@ -889,6 +889,46 @@ code {
   color: var(--text);
 }
 
+.directory-rename-input {
+  min-width: 0;
+  height: 23px;
+  flex: 1;
+  padding: 2px 5px;
+  border: 1px solid #6f91ff;
+  border-radius: 3px;
+  outline: none;
+  background: #101722;
+  color: var(--text);
+  font: inherit;
+}
+
+.tree-context-menu {
+  position: fixed;
+  z-index: 1000;
+  width: 190px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #171b24;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.46);
+}
+
+.tree-context-menu button {
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-context-menu button:hover {
+  background: rgba(124, 156, 255, 0.16);
+}
+
 .directory-empty {
   padding: 8px 18px 18px 43px;
   color: #606a79;
@@ -925,6 +965,7 @@ body.resizing-sidebar {
 }
 
 .file-workspace {
+  position: relative;
   min-width: 0;
   overflow: auto;
   padding: 26px 28px 60px;
@@ -948,6 +989,84 @@ body.resizing-sidebar {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.upload-actions {
+  position: relative;
+}
+
+.upload-menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 20;
+  width: 142px;
+  padding: 6px;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #151922;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.upload-menu button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.upload-menu button:hover {
+  background: rgba(124, 156, 255, 0.14);
+}
+
+.upload-status {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  margin: -10px 0 14px;
+  padding: 9px 12px;
+  border: 1px solid rgba(85, 230, 193, 0.24);
+  border-radius: 8px;
+  background: rgba(14, 42, 39, 0.94);
+  color: #bff8e9;
+  font-size: 12px;
+}
+
+.upload-status.error {
+  border-color: rgba(255, 111, 128, 0.3);
+  background: rgba(55, 22, 28, 0.95);
+  color: #ffb8c1;
+}
+
+.upload-drop-overlay {
+  position: absolute;
+  inset: 84px 28px 28px;
+  z-index: 18;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  border: 2px dashed rgba(124, 156, 255, 0.72);
+  border-radius: 14px;
+  background: rgba(15, 22, 38, 0.94);
+  color: #e8edff;
+  text-align: center;
+  pointer-events: none;
+}
+
+.upload-drop-overlay span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.directory-row.upload-drop-target {
+  outline: 1px solid rgba(124, 156, 255, 0.9);
+  background: rgba(124, 156, 255, 0.2);
 }
 
 .thumbnail-size-control {
@@ -1219,6 +1338,43 @@ body.resizing-sidebar {
   letter-spacing: 0.08em;
 }
 
+.text-edit-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.text-save-mode {
+  height: 32px;
+  padding: 0 26px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0c0f14;
+  color: var(--text);
+  font: inherit;
+}
+
+.text-save-status {
+  max-width: 110px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text-save-status.dirty {
+  color: #ffd27a;
+}
+
+.text-save-status.saved {
+  color: var(--accent-2);
+}
+
+.text-save-status.error {
+  color: #ff9ca8;
+}
+
 #fileFrame {
   width: 100%;
   min-height: 0;
@@ -1237,6 +1393,49 @@ body.resizing-sidebar {
 .formatted-file-preview.video-mode {
   display: flex;
   overflow: hidden;
+}
+
+.text-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  overflow: hidden;
+  background: #0d1118;
+  color: #d5dbe5;
+  font: 13px/1.7 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+#textEditorLineNumbers {
+  min-width: 52px;
+  height: 100%;
+  margin: 0;
+  padding: 24px 12px 24px 10px;
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  background: #0b0f15;
+  color: #586274;
+  font: inherit;
+  text-align: right;
+  user-select: none;
+}
+
+#textEditorInput {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px 26px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  tab-size: 2;
+  white-space: pre;
 }
 
 .formatted-file-status {

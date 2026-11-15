@@ -32,12 +32,20 @@ const state = {
   currentFileEntry: null,
   currentFileText: null,
   currentFileTextTruncated: false,
+  textEditMode: false,
+  textSaveMode: "manual",
+  textDirty: false,
+  textSaving: false,
+  textEditVersion: 0,
+  textAutoSaveTimer: null,
   viewer: null,
   viewerRequestId: 0,
   viewerImageUrl: "",
   readyThumbnails: new Set(),
   thumbnailObserver: null,
   filePreviewController: null,
+  uploadInProgress: false,
+  uploadPickerTarget: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -86,12 +94,23 @@ const elements = {
   galleryGrid: $("#galleryGrid"),
   galleryLoading: $("#galleryLoading"),
   galleryEmpty: $("#galleryEmpty"),
+  fileWorkspace: $(".file-workspace"),
   directoryTree: $("#directoryTree"),
   directoryEmpty: $("#directoryEmpty"),
   directoryUpButton: $("#directoryUpButton"),
   sidebarResizer: $("#sidebarResizer"),
   searchInput: $("#searchInput"),
   thumbnailSize: $("#thumbnailSize"),
+  uploadActions: $("#uploadActions"),
+  uploadButton: $("#uploadButton"),
+  uploadMenu: $("#uploadMenu"),
+  uploadFilesButton: $("#uploadFilesButton"),
+  uploadDirectoryButton: $("#uploadDirectoryButton"),
+  uploadFilesInput: $("#uploadFilesInput"),
+  uploadDirectoryInput: $("#uploadDirectoryInput"),
+  uploadStatus: $("#uploadStatus"),
+  uploadDropOverlay: $("#uploadDropOverlay"),
+  treeContextMenu: $("#treeContextMenu"),
   downloadDirectoryButton: $("#downloadDirectoryButton"),
   favoriteButton: $("#favoriteButton"),
   closeFileButton: $("#closeFileButton"),
@@ -104,6 +123,14 @@ const elements = {
   htmlViewControls: $("#htmlViewControls"),
   htmlSourceButton: $("#htmlSourceButton"),
   htmlRenderedButton: $("#htmlRenderedButton"),
+  textEditControls: $("#textEditControls"),
+  editTextButton: $("#editTextButton"),
+  textSaveMode: $("#textSaveMode"),
+  saveTextButton: $("#saveTextButton"),
+  textSaveStatus: $("#textSaveStatus"),
+  textEditor: $("#textEditor"),
+  textEditorInput: $("#textEditorInput"),
+  textEditorLineNumbers: $("#textEditorLineNumbers"),
   formattedFilePreview: $("#formattedFilePreview"),
   formattedFileLoading: $("#formattedFileLoading"),
   formattedFileError: $("#formattedFileError"),
@@ -511,6 +538,213 @@ function downloadDirectoryNode(node) {
   triggerDownload(directoryDownloadUrl(node), name);
 }
 
+function isSshDirectoryNode(node) {
+  return Boolean(
+    node &&
+    !node.syntheticS3Root &&
+    !node.archiveId &&
+    sourceType(node.source) === "SSH",
+  );
+}
+
+function showUploadStatus(message, error = false) {
+  elements.uploadStatus.textContent = message;
+  elements.uploadStatus.classList.remove("hidden");
+  elements.uploadStatus.classList.toggle("error", error);
+}
+
+function uploadItemsFromFileList(files) {
+  return [...files].map((file) => ({
+    file,
+    relativePath: file.webkitRelativePath || file.name,
+  }));
+}
+
+function fileFromEntry(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function readDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const entries = [];
+    const readBatch = () => reader.readEntries((batch) => {
+      if (!batch.length) {
+        resolve(entries);
+        return;
+      }
+      entries.push(...batch);
+      readBatch();
+    }, reject);
+    readBatch();
+  });
+}
+
+async function walkFileSystemEntry(entry, parent = "") {
+  const relativePath = parent ? `${parent}/${entry.name}` : entry.name;
+  if (entry.isFile) {
+    return [{ file: await fileFromEntry(entry), relativePath }];
+  }
+  if (!entry.isDirectory) return [];
+  const children = await readDirectoryEntries(entry.createReader());
+  const nested = await Promise.all(
+    children.map((child) => walkFileSystemEntry(child, relativePath)),
+  );
+  return nested.flat();
+}
+
+async function walkFileSystemHandle(handle, parent = "") {
+  const relativePath = parent ? `${parent}/${handle.name}` : handle.name;
+  if (handle.kind === "file") {
+    return [{ file: await handle.getFile(), relativePath }];
+  }
+  if (handle.kind !== "directory") return [];
+  const nested = [];
+  for await (const child of handle.values()) {
+    nested.push(...await walkFileSystemHandle(child, relativePath));
+  }
+  return nested;
+}
+
+async function uploadItemsFromDataTransfer(dataTransfer) {
+  const items = [...(dataTransfer.items || [])].filter(
+    (item) => item.kind === "file",
+  );
+  const collected = [];
+  for (const item of items) {
+    if (item.getAsFileSystemHandle) {
+      const handle = await item.getAsFileSystemHandle().catch(() => null);
+      if (handle) {
+        collected.push(...await walkFileSystemHandle(handle));
+        continue;
+      }
+    }
+    const entry = item.webkitGetAsEntry?.();
+    if (entry) {
+      collected.push(...await walkFileSystemEntry(entry));
+      continue;
+    }
+    const file = item.getAsFile();
+    if (file) collected.push({ file, relativePath: file.name });
+  }
+  return collected.length ? collected : uploadItemsFromFileList(dataTransfer.files || []);
+}
+
+async function putSshUpload(node, item) {
+  const upload = async () => {
+    const response = await fetch(apiUrl("/api/ssh/upload", {
+      source: node.source,
+      name: item.relativePath,
+    }), {
+      method: "PUT",
+      headers: {
+        "Content-Type": item.file.type || "application/octet-stream",
+      },
+      body: item.file,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(result.error || `上传失败 (${response.status})`);
+      error.httpStatus = response.status;
+      throw error;
+    }
+    return result;
+  };
+  try {
+    return await upload();
+  } catch (error) {
+    if (error.httpStatus || !IS_EXTENSION || !(await connectServer(true))) throw error;
+    return upload();
+  }
+}
+
+async function uploadFilesToSshNode(node, items) {
+  if (!isSshDirectoryNode(node)) {
+    showToast("请选择 SSH 目录后再上传");
+    return;
+  }
+  const validItems = items.filter((item) => item.file && item.relativePath);
+  if (!validItems.length || state.uploadInProgress) return;
+  state.uploadInProgress = true;
+  elements.uploadButton.disabled = true;
+  const errors = [];
+  try {
+    for (let index = 0; index < validItems.length; index += 1) {
+      const item = validItems[index];
+      showUploadStatus(
+        `正在上传 ${index + 1} / ${validItems.length}：${item.relativePath}`,
+      );
+      try {
+        await putSshUpload(node, item);
+      } catch (error) {
+        errors.push(`${item.relativePath}：${error.message}`);
+      }
+    }
+    await loadDirectoryNode(node, true);
+    node.expanded = true;
+    if (state.selectedDirectory === node) updateSelectedDirectory(node, false);
+    else renderDirectoryTree();
+    if (errors.length) {
+      showUploadStatus(
+        `已上传 ${validItems.length - errors.length} 个，失败 ${errors.length} 个：` +
+        errors.slice(0, 2).join("；"),
+        true,
+      );
+    } else {
+      showUploadStatus(`上传完成，共 ${validItems.length} 个文件`);
+      setTimeout(() => elements.uploadStatus.classList.add("hidden"), 2600);
+    }
+  } finally {
+    state.uploadInProgress = false;
+    elements.uploadButton.disabled = false;
+  }
+}
+
+function enableSshDropTarget(row, node) {
+  if (!isSshDirectoryNode(node)) return;
+  row.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    row.classList.add("upload-drop-target");
+  });
+  row.addEventListener("dragleave", (event) => {
+    if (!row.contains(event.relatedTarget)) row.classList.remove("upload-drop-target");
+  });
+  row.addEventListener("drop", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    row.classList.remove("upload-drop-target");
+    const items = await uploadItemsFromDataTransfer(event.dataTransfer);
+    await uploadFilesToSshNode(node, items);
+  });
+}
+
+function pastedImageName(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `paste_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.jpg`;
+}
+
+async function clipboardImageAsJpeg(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (result) => result ? resolve(result) : reject(new Error("粘贴图片转换失败")),
+      "image/jpeg",
+      0.94,
+    );
+  });
+}
+
 function parentPath(value) {
   const clean = value.replace(/\/+$/, "");
   const separator = clean.lastIndexOf("/");
@@ -845,22 +1079,26 @@ async function loadInterfaceStyle() {
   let sidebarWidth;
   let thumbnailSize;
   let markdownDefaultLayout;
+  let textSaveMode;
   if (globalThis.chrome?.storage?.local) {
     const result = await chrome.storage.local.get([
       "interfaceStyle",
       "sidebarWidth",
       "thumbnailSize",
       "markdownDefaultLayout",
+      "textSaveMode",
     ]);
     style = result.interfaceStyle;
     sidebarWidth = result.sidebarWidth;
     thumbnailSize = result.thumbnailSize;
     markdownDefaultLayout = result.markdownDefaultLayout;
+    textSaveMode = result.textSaveMode;
   } else {
     style = localStorage.getItem("interfaceStyle");
     sidebarWidth = Number(localStorage.getItem("sidebarWidth"));
     thumbnailSize = Number(localStorage.getItem("thumbnailSize"));
     markdownDefaultLayout = localStorage.getItem("markdownDefaultLayout");
+    textSaveMode = localStorage.getItem("textSaveMode");
   }
   applyInterfaceStyle(style);
   if (Number.isFinite(sidebarWidth) && sidebarWidth > 0) {
@@ -870,6 +1108,8 @@ async function loadInterfaceStyle() {
   state.markdownDefaultLayout =
     ["reading", "a4"].includes(markdownDefaultLayout) ? "reading" : "wide";
   setMarkdownLayout(state.markdownDefaultLayout);
+  state.textSaveMode = textSaveMode === "auto" ? "auto" : "manual";
+  elements.textSaveMode.value = state.textSaveMode;
 }
 
 function applyThumbnailSize(size) {
@@ -1413,6 +1653,11 @@ function updateSelectedDirectory(node, updateRoute = true) {
   elements.searchInput.value = "";
   elements.favoriteButton.classList.toggle("hidden", syntheticRoot || archiveDirectory);
   elements.downloadDirectoryButton.classList.toggle("hidden", syntheticRoot);
+  elements.uploadActions.classList.toggle("hidden", !isSshDirectoryNode(node));
+  if (!isSshDirectoryNode(node)) {
+    elements.uploadMenu.classList.add("hidden");
+    elements.uploadStatus.classList.add("hidden");
+  }
   elements.downloadDirectoryButton.textContent =
     archiveDirectory && !node.archivePath ? "↓ 下载归档" : "↓ 下载目录";
   renderDirectoryTree();
@@ -1551,6 +1796,96 @@ async function toggleDirectoryNode(node) {
   }
 }
 
+function hideTreeContextMenu() {
+  elements.treeContextMenu.classList.add("hidden");
+  elements.treeContextMenu.replaceChildren();
+}
+
+function showTreeContextMenu(event, items) {
+  event.preventDefault();
+  event.stopPropagation();
+  elements.treeContextMenu.replaceChildren();
+  items.forEach(({ label, action }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.role = "menuitem";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      hideTreeContextMenu();
+      try {
+        await action();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    elements.treeContextMenu.append(button);
+  });
+  elements.treeContextMenu.classList.remove("hidden");
+  const rect = elements.treeContextMenu.getBoundingClientRect();
+  elements.treeContextMenu.style.left =
+    `${Math.max(6, Math.min(event.clientX, innerWidth - rect.width - 6))}px`;
+  elements.treeContextMenu.style.top =
+    `${Math.max(6, Math.min(event.clientY, innerHeight - rect.height - 6))}px`;
+}
+
+function sshSourceForEntry(entry) {
+  const descriptor = decodeEntryDescriptor(entry.id);
+  if (!descriptor || descriptor.kind !== "ssh") return "";
+  if (!descriptor.port) return `${descriptor.target}:${descriptor.path}`;
+  const remotePath = descriptor.path.startsWith("/")
+    ? descriptor.path
+    : `/${descriptor.path}`;
+  return `ssh://${descriptor.target}:${descriptor.port}${remotePath}`;
+}
+
+async function renameSshSource(source, newName) {
+  return apiPost("/api/ssh/rename", { source, newName });
+}
+
+function beginTreeRename({ row, label, source, oldName, afterRename }) {
+  hideTreeContextMenu();
+  const input = document.createElement("input");
+  input.className = "directory-rename-input";
+  input.value = oldName;
+  input.setAttribute("aria-label", `重命名 ${oldName}`);
+  label.replaceWith(input);
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    const newName = input.value.trim();
+    if (!save || !newName || newName === oldName) {
+      input.replaceWith(label);
+      return;
+    }
+    try {
+      await renameSshSource(source, newName);
+      showToast(`已重命名为 ${newName}`);
+      await afterRename(newName);
+    } catch (error) {
+      input.replaceWith(label);
+      showToast(`重命名失败：${error.message}`);
+    }
+  };
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.focus();
+  const extensionIndex = oldName.lastIndexOf(".");
+  const selectionEnd = extensionIndex > 0 ? extensionIndex : oldName.length;
+  input.setSelectionRange(0, selectionEnd);
+  row.scrollIntoView({ block: "nearest" });
+}
+
 function renderDirectoryTree() {
   elements.directoryTree.replaceChildren();
   const root = state.directoryRoot;
@@ -1599,6 +1934,46 @@ function renderDirectoryTree() {
     const copyButton = createCopyPathButton(entryPathForCopy(entry), "文件");
     row.append(spacer, icon, label, downloadButton, copyButton);
     row.addEventListener("click", () => openTreeFile(node, entry));
+    row.addEventListener("contextmenu", (event) => {
+      const sshSource = sshSourceForEntry(entry);
+      const items = [
+        { label: "打开", action: () => openTreeFile(node, entry) },
+      ];
+      if (sshSource) {
+        items.push({
+          label: "重命名",
+          action: () => beginTreeRename({
+            row,
+            label,
+            source: sshSource,
+            oldName: entry.name,
+            afterRename: async () => {
+              if (state.currentTreeFileId === entry.id) {
+                closeViewer(false);
+                closeFileViewer(false);
+                state.currentTreeFileId = null;
+              }
+              await loadDirectoryNode(node, true);
+              if (state.selectedDirectory === node) updateSelectedDirectory(node, false);
+            },
+          }),
+        });
+      }
+      items.push(
+        {
+          label: "下载文件",
+          action: () => triggerDownload(
+            apiUrl("/api/file", { id: entry.id, download: "1" }),
+            entry.name || "download",
+          ),
+        },
+        {
+          label: "复制路径",
+          action: () => copyPath(entryPathForCopy(entry), "文件"),
+        },
+      );
+      showTreeContextMenu(event, items);
+    });
     fragment.append(row);
   };
   const appendNode = (node, depth) => {
@@ -1636,6 +2011,58 @@ function renderDirectoryTree() {
     const copyButton = createCopyPathButton(node.source, "目录");
     row.append(toggle, icon, label, downloadButton, copyButton);
     row.addEventListener("click", () => selectDirectoryNode(node));
+    row.addEventListener("contextmenu", (event) => {
+      const sshDirectory = isSshDirectoryNode(node);
+      const items = [
+        { label: "打开", action: () => selectDirectoryNode(node) },
+      ];
+      if (sshDirectory) {
+        items.push(
+          {
+            label: "上传文件到此处",
+            action: () => {
+              state.uploadPickerTarget = node;
+              elements.uploadFilesInput.click();
+            },
+          },
+          {
+            label: "上传目录到此处",
+            action: () => {
+              state.uploadPickerTarget = node;
+              elements.uploadDirectoryInput.click();
+            },
+          },
+        );
+      }
+      if (sshDirectory && node.parent) {
+        items.push({
+          label: "重命名",
+          action: () => beginTreeRename({
+            row,
+            label,
+            source: node.source,
+            oldName: node.name,
+            afterRename: async (newName) => {
+              const parent = node.parent;
+              const wasSelected = state.selectedDirectory === node;
+              await loadDirectoryNode(parent, true);
+              const renamed = parent.children.find((child) => child.name === newName);
+              if (wasSelected && renamed) {
+                await selectDirectoryNode(renamed);
+              } else {
+                renderDirectoryTree();
+              }
+            },
+          }),
+        });
+      }
+      items.push(
+        { label: "下载目录", action: () => downloadDirectoryNode(node) },
+        { label: "复制路径", action: () => copyPath(node.source, "目录") },
+      );
+      showTreeContextMenu(event, items);
+    });
+    enableSshDropTarget(row, node);
     fragment.append(row);
 
     if (node.expanded) {
@@ -1712,6 +2139,7 @@ async function openSource(source, force = false, options = {}) {
     if (result.targetType === "directory") {
       elements.downloadDirectoryButton.classList.remove("hidden");
       elements.downloadDirectoryButton.textContent = "↓ 下载目录";
+      elements.uploadActions.classList.toggle("hidden", state.sourceMode !== "ssh");
       state.directoryRoot = createDirectoryRoot(cleanSource, rootEntries);
       state.selectedDirectory = state.directoryRoot;
       state.entries = rootEntries.filter((entry) => entry.type !== "directory");
@@ -2468,6 +2896,222 @@ function setCurrentFileText(content, truncated = false) {
   elements.copyFileTextButton.textContent =
     truncated ? "⧉ 复制已显示内容" : "⧉ 复制全文";
   elements.copyFileTextButton.classList.remove("hidden");
+  const descriptor = state.currentFileEntry
+    ? decodeEntryDescriptor(state.currentFileEntry.id)
+    : null;
+  elements.textEditControls.classList.toggle(
+    "hidden",
+    !descriptor || descriptor.kind === "archive",
+  );
+}
+
+function clearTextAutoSave() {
+  clearTimeout(state.textAutoSaveTimer);
+  state.textAutoSaveTimer = null;
+}
+
+function setTextSaveStatus(message = "", type = "") {
+  elements.textSaveStatus.textContent = message;
+  elements.textSaveStatus.className = `text-save-status${type ? ` ${type}` : ""}`;
+}
+
+function updateTextEditorLineNumbers() {
+  const lines = elements.textEditorInput.value.split(/\r\n|\r|\n/).length;
+  elements.textEditorLineNumbers.textContent = Array.from(
+    { length: lines },
+    (_, index) => index + 1,
+  ).join("\n");
+}
+
+function updateTextSaveControls() {
+  elements.saveTextButton.classList.toggle(
+    "hidden",
+    !state.textEditMode && !state.textDirty,
+  );
+  elements.saveTextButton.disabled = state.textSaving || !state.textDirty;
+  elements.saveTextButton.textContent = state.textSaving ? "保存中…" : "保存";
+  if (state.textSaving) setTextSaveStatus("正在保存…");
+  else if (state.textDirty) {
+    setTextSaveStatus(
+      state.textSaveMode === "auto" ? "等待自动保存" : "有未保存修改",
+      "dirty",
+    );
+  }
+}
+
+function scheduleTextAutoSave() {
+  clearTextAutoSave();
+  if (
+    state.textSaveMode !== "auto" ||
+    !state.textDirty ||
+    state.textSaving
+  ) return;
+  state.textAutoSaveTimer = setTimeout(() => saveCurrentText(), 1000);
+}
+
+function textContentType(entry) {
+  const extension = entry?.name?.split(".").at(-1)?.toLocaleLowerCase();
+  if (extension === "html" || extension === "htm") return "text/html; charset=utf-8";
+  if (extension === "json") return "application/json; charset=utf-8";
+  if (extension === "md" || extension === "markdown") {
+    return "text/markdown; charset=utf-8";
+  }
+  return "text/plain; charset=utf-8";
+}
+
+async function putCurrentText(entry, content, retry = true) {
+  let response;
+  try {
+    response = await fetch(apiUrl("/api/file/save", { id: entry.id }), {
+      method: "PUT",
+      headers: { "Content-Type": textContentType(entry) },
+      body: content,
+    });
+  } catch (error) {
+    if (retry && IS_EXTENSION && await connectServer(true)) {
+      return putCurrentText(entry, content, false);
+    }
+    throw error;
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = result.error || `保存失败 (${response.status})`;
+    if (
+      retry &&
+      IS_EXTENSION &&
+      isRetryableApiError(response.status, message) &&
+      await connectServer(true)
+    ) {
+      return putCurrentText(entry, content, false);
+    }
+    throw new Error(message);
+  }
+  return result;
+}
+
+async function saveCurrentText() {
+  if (
+    !state.textDirty ||
+    state.textSaving ||
+    !state.currentFileEntry
+  ) return;
+  clearTextAutoSave();
+  const entry = state.currentFileEntry;
+  const content = elements.textEditorInput.value;
+  const version = state.textEditVersion;
+  state.textSaving = true;
+  let saveError = null;
+  updateTextSaveControls();
+  try {
+    const result = await putCurrentText(entry, content);
+    if (state.currentFileEntry !== entry) return;
+    if (result.id) {
+      entry.id = result.id;
+      state.currentTreeFileId = result.id;
+      elements.downloadFileButton.href = apiUrl("/api/file", {
+        id: result.id,
+        download: "1",
+      });
+      if (Number.isFinite(result.size)) entry.size = result.size;
+      if (Number.isFinite(result.modified)) entry.modified = result.modified;
+      if (state.directoryRoot) renderDirectoryTree();
+    }
+    state.currentFileText = content;
+    state.currentFileTextTruncated = false;
+    if (version === state.textEditVersion) {
+      state.textDirty = false;
+      setTextSaveStatus("已保存", "saved");
+    }
+  } catch (error) {
+    saveError = error;
+    showToast(`保存失败：${error.message}`);
+  } finally {
+    state.textSaving = false;
+    updateTextSaveControls();
+    if (saveError) setTextSaveStatus("保存失败", "error");
+    else if (state.textDirty && state.textSaveMode === "auto") scheduleTextAutoSave();
+  }
+}
+
+async function loadFullTextForEditing() {
+  if (!state.currentFileEntry || !state.currentFileTextTruncated) return;
+  setTextSaveStatus("正在读取全文…");
+  const response = await fetch(apiUrl("/api/file", { id: state.currentFileEntry.id }));
+  if (!response.ok) throw new Error(`文件读取失败 (${response.status})`);
+  const declaredSize = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(declaredSize) && declaredSize > 64 * 1024 * 1024) {
+    throw new Error("文本文件超过 64 MB，不能在页面内编辑");
+  }
+  const content = await response.arrayBuffer();
+  if (content.byteLength > 64 * 1024 * 1024) {
+    throw new Error("文本文件超过 64 MB，不能在页面内编辑");
+  }
+  const text = decodeGenericText(content);
+  if (text === null) throw new Error("该文件包含二进制内容，不能作为文本编辑");
+  setCurrentFileText(text, false);
+}
+
+async function renderEditedTextPreview() {
+  const entry = state.currentFileEntry;
+  if (!entry) return;
+  const content = elements.textEditorInput.value;
+  const kind = formattedFileKind(entry);
+  state.currentFileText = content;
+  elements.markdownPreview.classList.add("hidden");
+  elements.jsonPreview.classList.add("hidden");
+  elements.codePreview.classList.add("hidden");
+  elements.formattedFileError.classList.add("hidden");
+  if (kind === "markdown") {
+    await renderMarkdown(content, entry);
+    elements.markdownPreview.classList.remove("hidden");
+  } else if (kind === "json") {
+    try {
+      elements.jsonPreview.querySelector("code").innerHTML = highlightedJson(content);
+    } catch (error) {
+      elements.jsonPreview.querySelector("code").textContent = content;
+      elements.formattedFileError.textContent = `JSON 格式有误：${error.message}`;
+      elements.formattedFileError.classList.remove("hidden");
+    }
+    elements.jsonPreview.classList.remove("hidden");
+  } else {
+    renderCodeContent(
+      entry,
+      content,
+      kind === "html" ? "xml" : kind === "code" ? codeLanguage(entry) : "plaintext",
+    );
+    if (kind === "html") {
+      state.htmlViewMode = "source";
+      elements.htmlSourceButton.classList.add("active");
+      elements.htmlRenderedButton.classList.remove("active");
+    }
+  }
+}
+
+async function setTextEditMode(editing) {
+  if (!state.currentFileEntry || state.currentFileText === null) return;
+  if (editing && state.currentFileTextTruncated) await loadFullTextForEditing();
+  state.textEditMode = editing;
+  elements.editTextButton.textContent = editing ? "预览" : "编辑";
+  elements.textEditor.classList.toggle("hidden", !editing);
+  elements.htmlViewControls.classList.toggle(
+    "hidden",
+    editing || formattedFileKind(state.currentFileEntry) !== "html",
+  );
+  if (editing) {
+    elements.fileFrame.classList.add("hidden");
+    elements.formattedFilePreview.classList.remove("hidden");
+    elements.markdownPreview.classList.add("hidden");
+    elements.jsonPreview.classList.add("hidden");
+    elements.codePreview.classList.add("hidden");
+    elements.officePreview.classList.add("hidden");
+    elements.textEditorInput.value = state.currentFileText;
+    updateTextEditorLineNumbers();
+    elements.textEditorInput.focus();
+    updateTextSaveControls();
+  } else {
+    await renderEditedTextPreview();
+  }
+  updateTextSaveControls();
 }
 
 async function copyCurrentFileText() {
@@ -2546,10 +3190,20 @@ function showUnsupportedBinary(entry) {
 }
 
 async function openFileViewer(entry) {
+  clearTextAutoSave();
+  state.textEditMode = false;
+  state.textDirty = false;
+  state.textSaving = false;
+  state.textEditVersion = 0;
   state.currentFileEntry = entry;
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
   elements.copyFileTextButton.classList.add("hidden");
+  elements.textEditControls.classList.add("hidden");
+  elements.textEditor.classList.add("hidden");
+  elements.saveTextButton.classList.add("hidden");
+  elements.editTextButton.textContent = "编辑";
+  setTextSaveStatus();
   state.currentTreeFileId = entry.id;
   if (state.directoryRoot) renderDirectoryTree();
   state.filePreviewController?.abort();
@@ -2582,6 +3236,7 @@ async function openFileViewer(entry) {
   elements.fileFrame.classList.toggle("hidden", !browserPreview);
   elements.formattedFilePreview.classList.toggle("hidden", browserPreview);
   elements.formattedFilePreview.classList.toggle("video-mode", kind === "video");
+  elements.textEditor.classList.add("hidden");
   elements.markdownPreview.classList.add("hidden");
   elements.jsonPreview.classList.add("hidden");
   elements.codePreview.classList.add("hidden");
@@ -2689,12 +3344,18 @@ async function openFileViewer(entry) {
 
 function closeFileViewer(showDirectory = true) {
   if (elements.fileView.classList.contains("hidden")) return;
+  clearTextAutoSave();
   state.filePreviewController?.abort();
   state.filePreviewController = null;
   state.currentFileEntry = null;
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
+  state.textEditMode = false;
+  state.textDirty = false;
+  state.textSaving = false;
   elements.copyFileTextButton.classList.add("hidden");
+  elements.textEditControls.classList.add("hidden");
+  elements.textEditor.classList.add("hidden");
   elements.fileFrame.src = "about:blank";
   delete elements.fileFrame.dataset.renderEntry;
   elements.markdownPreview.replaceChildren();
@@ -2994,6 +3655,31 @@ elements.settingsButton.addEventListener("click", () => {
 elements.backButton.addEventListener("click", navigateDirectoryUp);
 elements.directoryUpButton.addEventListener("click", navigateDirectoryUp);
 elements.refreshButton.addEventListener("click", refreshCurrentDirectory);
+elements.uploadButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  state.uploadPickerTarget = state.selectedDirectory;
+  elements.uploadMenu.classList.toggle("hidden");
+});
+elements.uploadFilesButton.addEventListener("click", () => {
+  elements.uploadMenu.classList.add("hidden");
+  elements.uploadFilesInput.click();
+});
+elements.uploadDirectoryButton.addEventListener("click", () => {
+  elements.uploadMenu.classList.add("hidden");
+  elements.uploadDirectoryInput.click();
+});
+elements.uploadFilesInput.addEventListener("change", async () => {
+  const target = state.uploadPickerTarget || state.selectedDirectory;
+  const items = uploadItemsFromFileList(elements.uploadFilesInput.files);
+  elements.uploadFilesInput.value = "";
+  await uploadFilesToSshNode(target, items);
+});
+elements.uploadDirectoryInput.addEventListener("change", async () => {
+  const target = state.uploadPickerTarget || state.selectedDirectory;
+  const items = uploadItemsFromFileList(elements.uploadDirectoryInput.files);
+  elements.uploadDirectoryInput.value = "";
+  await uploadFilesToSshNode(target, items);
+});
 elements.downloadDirectoryButton.addEventListener("click", () => {
   downloadDirectoryNode(state.selectedDirectory);
 });
@@ -3025,6 +3711,51 @@ elements.htmlRenderedButton.addEventListener(
   "click",
   () => setHtmlViewMode("rendered"),
 );
+elements.editTextButton.addEventListener("click", async () => {
+  try {
+    await setTextEditMode(!state.textEditMode);
+  } catch (error) {
+    showToast(`无法进入编辑模式：${error.message}`);
+  }
+});
+elements.saveTextButton.addEventListener("click", saveCurrentText);
+elements.textSaveMode.addEventListener("change", async (event) => {
+  state.textSaveMode = event.currentTarget.value === "auto" ? "auto" : "manual";
+  if (globalThis.chrome?.storage?.local) {
+    await chrome.storage.local.set({ textSaveMode: state.textSaveMode });
+  } else {
+    localStorage.setItem("textSaveMode", state.textSaveMode);
+  }
+  updateTextSaveControls();
+  if (state.textSaveMode === "auto") scheduleTextAutoSave();
+  else clearTextAutoSave();
+});
+elements.textEditorInput.addEventListener("input", () => {
+  state.currentFileText = elements.textEditorInput.value;
+  state.textDirty = true;
+  state.textEditVersion += 1;
+  updateTextEditorLineNumbers();
+  updateTextSaveControls();
+  scheduleTextAutoSave();
+});
+elements.textEditorInput.addEventListener("scroll", () => {
+  elements.textEditorLineNumbers.scrollTop = elements.textEditorInput.scrollTop;
+});
+elements.textEditorInput.addEventListener("keydown", (event) => {
+  if (event.key === "Tab") {
+    event.preventDefault();
+    const input = event.currentTarget;
+    const start = input.selectionStart;
+    input.setRangeText("  ", start, input.selectionEnd, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (
+    event.key.toLocaleLowerCase() === "s" &&
+    (event.metaKey || event.ctrlKey)
+  ) {
+    event.preventDefault();
+    saveCurrentText();
+  }
+});
 elements.copyViewerImageButton.addEventListener("click", () => {
   copyImageToClipboard(
     state.images[state.currentIndex],
@@ -3039,6 +3770,77 @@ elements.fitButton.addEventListener("click", () => state.viewer?.viewport.goHome
 elements.actualButton.addEventListener("click", () => {
   const zoom = state.viewer?.viewport.imageToViewportZoom(1);
   if (zoom) state.viewer.viewport.zoomTo(zoom);
+});
+
+document.addEventListener("click", (event) => {
+  if (!elements.uploadActions.contains(event.target)) {
+    elements.uploadMenu.classList.add("hidden");
+  }
+  if (!elements.treeContextMenu.contains(event.target)) hideTreeContextMenu();
+});
+document.addEventListener("contextmenu", (event) => {
+  if (!elements.directoryTree.contains(event.target)) hideTreeContextMenu();
+});
+window.addEventListener("blur", hideTreeContextMenu);
+window.addEventListener("resize", hideTreeContextMenu);
+document.addEventListener("scroll", hideTreeContextMenu, true);
+window.addEventListener("beforeunload", (event) => {
+  if (!state.textDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+elements.fileWorkspace.addEventListener("dragover", (event) => {
+  if (
+    !event.dataTransfer?.types?.includes("Files") ||
+    !isSshDirectoryNode(state.selectedDirectory)
+  ) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  elements.uploadDropOverlay.classList.remove("hidden");
+});
+elements.fileWorkspace.addEventListener("dragleave", (event) => {
+  if (!elements.fileWorkspace.contains(event.relatedTarget)) {
+    elements.uploadDropOverlay.classList.add("hidden");
+  }
+});
+elements.fileWorkspace.addEventListener("drop", async (event) => {
+  if (!isSshDirectoryNode(state.selectedDirectory)) return;
+  event.preventDefault();
+  elements.uploadDropOverlay.classList.add("hidden");
+  const items = await uploadItemsFromDataTransfer(event.dataTransfer);
+  await uploadFilesToSshNode(state.selectedDirectory, items);
+});
+
+document.addEventListener("paste", async (event) => {
+  if (
+    elements.galleryView.classList.contains("hidden") ||
+    !elements.fileView.classList.contains("hidden") ||
+    !elements.viewerView.classList.contains("hidden") ||
+    !isSshDirectoryNode(state.selectedDirectory) ||
+    document.activeElement?.matches("input, textarea, [contenteditable='true']")
+  ) return;
+  const clipboardItem = [...(event.clipboardData?.items || [])].find(
+    (item) => item.kind === "file" && item.type.startsWith("image/"),
+  );
+  if (!clipboardItem) return;
+  const source = clipboardItem.getAsFile();
+  if (!source) return;
+  event.preventDefault();
+  try {
+    const jpeg = await clipboardImageAsJpeg(source);
+    const name = pastedImageName();
+    const file = new File([jpeg], name, {
+      type: "image/jpeg",
+      lastModified: Date.now(),
+    });
+    await uploadFilesToSshNode(state.selectedDirectory, [{
+      file,
+      relativePath: name,
+    }]);
+  } catch (error) {
+    showUploadStatus(`粘贴图片失败：${error.message}`, true);
+  }
 });
 
 document.addEventListener("keydown", (event) => {
