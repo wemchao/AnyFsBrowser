@@ -27,7 +27,7 @@ const state = {
   thumbnailSize: 220,
   markdownDefaultLayout: "wide",
   markdownLayout: "wide",
-  htmlViewMode: "source",
+  htmlViewMode: "rendered",
   currentFileEntry: null,
   viewer: null,
   viewerRequestId: 0,
@@ -2169,16 +2169,7 @@ async function renderOfficePreview(kind, arrayBuffer) {
   }
 }
 
-function htmlRenderUrl(entry) {
-  const descriptor = decodeEntryDescriptor(entry.id);
-  if (!descriptor) return "";
-  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
-  const fileName = sourcePath.split("/").filter(Boolean).at(-1) || "index.html";
-  return `${SERVER}/api/html-render/${encodeURIComponent(state.token)}/` +
-    `${encodeURIComponent(entry.id)}/${encodeURIComponent(fileName)}`;
-}
-
-function setHtmlViewMode(mode) {
+async function setHtmlViewMode(mode) {
   const rendered = mode === "rendered";
   state.htmlViewMode = rendered ? "rendered" : "source";
   elements.htmlSourceButton.classList.toggle("active", !rendered);
@@ -2188,13 +2179,33 @@ function setHtmlViewMode(mode) {
   elements.formattedFilePreview.classList.toggle("hidden", rendered);
   elements.fileFrame.classList.toggle("hidden", !rendered);
 
-  if (!rendered || !state.currentFileEntry) return;
-  const renderUrl = htmlRenderUrl(state.currentFileEntry);
-  if (!renderUrl) return;
-  if (elements.fileFrame.dataset.renderEntry !== state.currentFileEntry.id) {
-    elements.fileFrame.setAttribute("sandbox", "");
-    elements.fileFrame.dataset.renderEntry = state.currentFileEntry.id;
-    elements.fileFrame.src = renderUrl;
+  const entry = state.currentFileEntry;
+  if (!rendered || !entry) return;
+  if (elements.fileFrame.dataset.renderEntry === entry.id) return;
+
+  try {
+    const response = await fetch(apiUrl("/api/html-render-session", { id: entry.id }));
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.url) {
+      throw new Error(result.error || `HTML 页面准备失败 (${response.status})`);
+    }
+    if (state.currentFileEntry?.id !== entry.id || state.htmlViewMode !== "rendered") {
+      return;
+    }
+    elements.fileFrame.setAttribute(
+      "sandbox",
+      "allow-scripts allow-forms allow-modals allow-popups allow-downloads",
+    );
+    elements.fileFrame.dataset.renderEntry = entry.id;
+    elements.fileFrame.src = new URL(result.url, SERVER).toString();
+  } catch (error) {
+    if (state.currentFileEntry?.id !== entry.id) return;
+    state.htmlViewMode = "source";
+    elements.htmlSourceButton.classList.add("active");
+    elements.htmlRenderedButton.classList.remove("active");
+    elements.formattedFilePreview.classList.remove("hidden");
+    elements.fileFrame.classList.add("hidden");
+    showToast(error.message);
   }
 }
 
@@ -2245,7 +2256,7 @@ async function openFileViewer(entry) {
 
   elements.fileFrame.src = "about:blank";
   delete elements.fileFrame.dataset.renderEntry;
-  if (kind === "html") setHtmlViewMode("source");
+  if (kind === "html") await setHtmlViewMode("rendered");
   if (kind === "video") {
     elements.videoPlayer.autoplay = false;
     elements.videoPlayer.src = url;

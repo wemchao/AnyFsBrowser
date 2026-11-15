@@ -39,6 +39,7 @@ const jobs = new Map();
 let browserImageQueue = Promise.resolve();
 const remoteAgents = new RemoteAgentManager();
 const remoteBrowserImages = new Map();
+const htmlRenderSessions = new Map();
 
 function sendNativeMessage(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -1408,29 +1409,33 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const htmlRenderMatch = url.pathname.match(
-    /^\/api\/html-render\/([^/]+)\/([^/]+)\/(.+)$/,
-  );
+  const htmlRenderMatch = url.pathname.match(/^\/api\/html-render\/([^/]+)\/(.+)$/);
   if (htmlRenderMatch) {
     if (request.method !== "GET") throw new HttpError(405, "只支持 GET 请求");
-    const [, token, documentId, requestedPath] = htmlRenderMatch;
-    if (token !== SESSION_TOKEN) throw new HttpError(401, "HTML 预览会话已失效");
-    const descriptor = htmlRenderDescriptor(
-      decodeDescriptor(decodeURIComponent(documentId)),
-      requestedPath,
-    );
+    const [, token, requestedPath] = htmlRenderMatch;
+    const renderSession = htmlRenderSessions.get(token);
+    if (!renderSession || renderSession.expiresAt < Date.now()) {
+      htmlRenderSessions.delete(token);
+      throw new HttpError(401, "HTML 预览会话已失效");
+    }
+    renderSession.expiresAt = Date.now() + 60 * 60 * 1000;
+    const descriptor = htmlRenderDescriptor(renderSession.descriptor, requestedPath);
     const filePath = await materialize(descriptor);
     const contentType = contentTypeFor(
       descriptor.kind === "s3" ? descriptor.key : descriptor.path,
     );
+    const scopedSource = `http://${HOST}:${PORT}/api/html-render/${token}/`;
     const headers = {
       "X-Content-Type-Options": "nosniff",
       ...(contentType.startsWith("text/html")
         ? {
           "Content-Security-Policy":
-            "default-src 'self' data: blob:; script-src 'none'; " +
-            "style-src 'self' 'unsafe-inline' data:; connect-src 'none'; " +
-            "object-src 'none'; base-uri 'self'; form-action 'none'",
+            `default-src 'none'; script-src ${scopedSource} 'unsafe-inline'; ` +
+            `style-src ${scopedSource} 'unsafe-inline' data:; ` +
+            `img-src ${scopedSource} data: blob:; font-src ${scopedSource} data:; ` +
+            `media-src ${scopedSource} data: blob:; connect-src ${scopedSource}; ` +
+            `worker-src ${scopedSource} blob:; frame-src ${scopedSource} data: blob:; ` +
+            "object-src 'none'; base-uri 'none'; form-action 'none'",
         }
         : {}),
     };
@@ -1447,6 +1452,30 @@ async function handleRequest(request, response) {
 
   if (url.searchParams.get("token") !== SESSION_TOKEN) {
     throw new HttpError(401, "会话已失效，请刷新插件页面");
+  }
+
+  if (url.pathname === "/api/html-render-session" && request.method === "GET") {
+    const descriptor = decodeDescriptor(url.searchParams.get("id"));
+    const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+    if (![".html", ".htm"].includes(path.posix.extname(sourcePath).toLowerCase())) {
+      throw new HttpError(400, "只有 HTML 文件可以使用页面预览");
+    }
+    for (const [key, session] of htmlRenderSessions) {
+      if (session.expiresAt < Date.now()) htmlRenderSessions.delete(key);
+    }
+    while (htmlRenderSessions.size >= 100) {
+      htmlRenderSessions.delete(htmlRenderSessions.keys().next().value);
+    }
+    const renderToken = crypto.randomBytes(24).toString("base64url");
+    htmlRenderSessions.set(renderToken, {
+      descriptor,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+    const fileName = path.posix.basename(sourcePath) || "index.html";
+    sendJson(response, 200, {
+      url: `/api/html-render/${renderToken}/${encodeURIComponent(fileName)}`,
+    });
+    return;
   }
 
   if (url.pathname === "/api/system" && request.method === "GET") {
