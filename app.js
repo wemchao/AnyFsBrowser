@@ -28,12 +28,15 @@ const state = {
   thumbnailSize: 220,
   markdownDefaultLayout: "wide",
   markdownLayout: "wide",
+  htmlDefaultViewMode: "rendered",
   htmlViewMode: "rendered",
   currentFileEntry: null,
   currentFileText: null,
   currentFileTextTruncated: false,
+  currentFileWritable: false,
   textEditMode: false,
   textSaveMode: "manual",
+  textDefaultMode: "edit",
   textDirty: false,
   textSaving: false,
   textEditVersion: 0,
@@ -1081,6 +1084,8 @@ async function loadInterfaceStyle() {
   let thumbnailSize;
   let markdownDefaultLayout;
   let textSaveMode;
+  let textDefaultMode;
+  let htmlDefaultViewMode;
   if (globalThis.chrome?.storage?.local) {
     const result = await chrome.storage.local.get([
       "interfaceStyle",
@@ -1088,18 +1093,24 @@ async function loadInterfaceStyle() {
       "thumbnailSize",
       "markdownDefaultLayout",
       "textSaveMode",
+      "textDefaultMode",
+      "htmlDefaultViewMode",
     ]);
     style = result.interfaceStyle;
     sidebarWidth = result.sidebarWidth;
     thumbnailSize = result.thumbnailSize;
     markdownDefaultLayout = result.markdownDefaultLayout;
     textSaveMode = result.textSaveMode;
+    textDefaultMode = result.textDefaultMode;
+    htmlDefaultViewMode = result.htmlDefaultViewMode;
   } else {
     style = localStorage.getItem("interfaceStyle");
     sidebarWidth = Number(localStorage.getItem("sidebarWidth"));
     thumbnailSize = Number(localStorage.getItem("thumbnailSize"));
     markdownDefaultLayout = localStorage.getItem("markdownDefaultLayout");
     textSaveMode = localStorage.getItem("textSaveMode");
+    textDefaultMode = localStorage.getItem("textDefaultMode");
+    htmlDefaultViewMode = localStorage.getItem("htmlDefaultViewMode");
   }
   applyInterfaceStyle(style);
   if (Number.isFinite(sidebarWidth) && sidebarWidth > 0) {
@@ -1110,6 +1121,8 @@ async function loadInterfaceStyle() {
     ["reading", "a4"].includes(markdownDefaultLayout) ? "reading" : "wide";
   setMarkdownLayout(state.markdownDefaultLayout);
   state.textSaveMode = textSaveMode === "auto" ? "auto" : "manual";
+  state.textDefaultMode = textDefaultMode === "read" ? "read" : "edit";
+  state.htmlDefaultViewMode = htmlDefaultViewMode === "source" ? "source" : "rendered";
   elements.textSaveMode.value = state.textSaveMode;
 }
 
@@ -2902,7 +2915,7 @@ function setCurrentFileText(content, truncated = false) {
     : null;
   elements.textEditControls.classList.toggle(
     "hidden",
-    !descriptor || descriptor.kind === "archive",
+    !descriptor || descriptor.kind === "archive" || !state.currentFileWritable,
   );
 }
 
@@ -3199,6 +3212,7 @@ async function openFileViewer(entry) {
   state.currentFileEntry = entry;
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
+  state.currentFileWritable = false;
   elements.copyFileTextButton.classList.add("hidden");
   elements.textEditControls.classList.add("hidden");
   elements.textEditor.classList.add("hidden");
@@ -3212,6 +3226,10 @@ async function openFileViewer(entry) {
   state.filePreviewController = controller;
   const url = apiUrl("/api/file", { id: entry.id });
   const kind = formattedFileKind(entry);
+  const editableText = ["markdown", "json", "code", "html", "generic"].includes(kind);
+  const capabilitiesPromise = editableText
+    ? api("/api/file-capabilities", { id: entry.id }).catch(() => ({ writable: false }))
+    : Promise.resolve({ writable: false });
   const directFile = state.targetType === "file";
   elements.closeFileButton.textContent = directFile ? "← 返回主页" : "← 返回目录";
   elements.fileHomeButton.classList.toggle("hidden", directFile);
@@ -3258,7 +3276,7 @@ async function openFileViewer(entry) {
 
   elements.fileFrame.src = "about:blank";
   delete elements.fileFrame.dataset.renderEntry;
-  if (kind === "html") await setHtmlViewMode("rendered");
+  if (kind === "html") await setHtmlViewMode(state.htmlDefaultViewMode);
   if (kind === "video") {
     elements.videoPlayer.autoplay = false;
     elements.videoPlayer.src = url;
@@ -3292,6 +3310,8 @@ async function openFileViewer(entry) {
       ? await response.arrayBuffer()
       : await response.text();
     if (controller.signal.aborted) return;
+    state.currentFileWritable = (await capabilitiesPromise).writable === true;
+    if (controller.signal.aborted || state.currentFileEntry !== entry) return;
 
     if (kind === "markdown") {
       setCurrentFileText(content);
@@ -3333,6 +3353,13 @@ async function openFileViewer(entry) {
       await renderOfficePreview(kind, content);
       elements.officePreview.classList.remove("hidden");
     }
+    if (
+      state.currentFileText !== null &&
+      state.currentFileWritable &&
+      state.textDefaultMode === "edit"
+    ) {
+      await setTextEditMode(true);
+    }
   } catch (error) {
     if (error.name === "AbortError") return;
     elements.formattedFileError.textContent = error.message;
@@ -3352,6 +3379,7 @@ function closeFileViewer(showDirectory = true) {
   state.currentFileEntry = null;
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
+  state.currentFileWritable = false;
   state.textEditMode = false;
   state.textDirty = false;
   state.textSaving = false;
@@ -3651,8 +3679,9 @@ elements.saveS3ConfigButton.addEventListener("click", saveStandaloneS3Config);
 elements.saveCredentialsButton.addEventListener("click", saveCredentialsFile);
 elements.homeButton.addEventListener("click", showHome);
 elements.settingsButton.addEventListener("click", () => {
-  if (globalThis.chrome?.runtime?.openOptionsPage) chrome.runtime.openOptionsPage();
-  else location.href = "/options.html";
+  location.href = globalThis.chrome?.runtime?.getURL
+    ? chrome.runtime.getURL("options.html")
+    : "/options.html";
 });
 elements.backButton.addEventListener("click", navigateDirectoryUp);
 elements.directoryUpButton.addEventListener("click", navigateDirectoryUp);
@@ -3901,6 +3930,20 @@ globalThis.chrome?.storage?.onChanged?.addListener((changes, area) => {
       ["reading", "a4"].includes(changes.markdownDefaultLayout.newValue)
         ? "reading"
         : "wide";
+  }
+  if (area === "local" && changes.textSaveMode) {
+    state.textSaveMode = changes.textSaveMode.newValue === "auto" ? "auto" : "manual";
+    elements.textSaveMode.value = state.textSaveMode;
+    if (state.textSaveMode === "auto") scheduleTextAutoSave();
+    else clearTextAutoSave();
+  }
+  if (area === "local" && changes.textDefaultMode) {
+    state.textDefaultMode =
+      changes.textDefaultMode.newValue === "read" ? "read" : "edit";
+  }
+  if (area === "local" && changes.htmlDefaultViewMode) {
+    state.htmlDefaultViewMode =
+      changes.htmlDefaultViewMode.newValue === "source" ? "source" : "rendered";
   }
 });
 

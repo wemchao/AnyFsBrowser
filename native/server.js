@@ -1740,6 +1740,11 @@ async function saveTextFile(descriptor, content, contentType) {
   if (descriptor.kind === "local") {
     const stat = await fsp.stat(descriptor.path).catch(() => null);
     if (!stat?.isFile()) throw new HttpError(404, "文本文件不存在");
+    try {
+      await fsp.access(descriptor.path, fs.constants.W_OK);
+    } catch {
+      throw new HttpError(403, "该文本文件为只读，不能保存");
+    }
     const temporary =
       `${descriptor.path}.anyfs-${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
     let handle;
@@ -1821,6 +1826,36 @@ async function saveTextFile(descriptor, content, contentType) {
     }
   }
   throw new HttpError(400, "当前来源不支持保存");
+}
+
+async function fileCapabilities(descriptor) {
+  if (descriptor.directory || descriptor.kind === "archive") {
+    return { writable: false };
+  }
+  if (descriptor.kind === "local") {
+    try {
+      const stat = await fsp.stat(descriptor.path);
+      if (!stat.isFile()) return { writable: false };
+      await fsp.access(descriptor.path, fs.constants.W_OK);
+      return { writable: true };
+    } catch {
+      return { writable: false };
+    }
+  }
+  if (descriptor.kind === "ssh") {
+    try {
+      const result = await remoteAgents.json(descriptor, "/stat", {
+        path: descriptor.path,
+      });
+      return { writable: result.writable === true && !result.directory };
+    } catch {
+      return { writable: false };
+    }
+  }
+  if (descriptor.kind === "s3") {
+    return { writable: true, permissionCheckedOnSave: true };
+  }
+  return { writable: false };
 }
 
 function contentTypeFor(filePath) {
@@ -2184,6 +2219,12 @@ async function handleRequest(request, response) {
   }
 
   if (request.method !== "GET") throw new HttpError(405, "请求方法不支持");
+
+  if (url.pathname === "/api/file-capabilities") {
+    const descriptor = decodeDescriptor(url.searchParams.get("id"));
+    sendJson(response, 200, await fileCapabilities(descriptor));
+    return;
+  }
 
   if (url.pathname === "/api/s3/buckets") {
     const profile = url.searchParams.get("profile") || undefined;

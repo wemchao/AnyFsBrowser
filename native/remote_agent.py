@@ -57,6 +57,7 @@ def stat_path(file_path):
         "size": stat.st_size,
         "modified": stat.st_mtime * 1000,
         "directory": os.path.isdir(file_path),
+        "writable": os.access(file_path, os.W_OK),
     }
 
 
@@ -273,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             parent = os.path.dirname(target)
             if overwrite and not os.path.isfile(target):
                 self.send_json(404, {"error": "text file not found"})
+                return
+            if overwrite and not os.access(target, os.W_OK):
+                self.send_json(403, {"error": "text file is read-only"})
                 return
             if not overwrite:
                 os.makedirs(parent, exist_ok=True)

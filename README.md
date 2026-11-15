@@ -30,9 +30,10 @@ Chrome/Edge 多来源文件浏览插件。支持本地目录、SSH 主机和 S3/
 - Markdown Enhanced 风格预览，支持 Mermaid 流程图和 LaTeX 公式
 - Markdown 内的相对路径图片会按文档所在目录解析，支持本地、SSH 和 S3
 - Markdown 和 JSON 预览铺满右侧内容区
-- Markdown 支持宽屏与阅读模式临时切换；设置页可指定默认版式
+- Markdown 支持宽屏与阅读模式临时切换；设置页可指定 Markdown 默认版式和 HTML 默认页面/源码视图
 - 常见代码、TXT、HTML/XML 安全源码预览与语法高亮
 - 文本、代码、JSON、Markdown 和 HTML 支持直接编辑；可手动保存，或在停止修改 1 秒后自动保存
+- 默认使用编辑模式和手动保存；通用设置可改为阅读模式或自动保存，只读文件始终使用阅读模式
 - 本地、SSH、S3/OSS 文本均可写回，归档包内文件保持只读
 - `.gitignore`、`.env`、Dockerfile、Makefile 和未知后缀的文本文件会像 VS Code 一样直接打开
 - 未知二进制文件只显示“不支持预览”提示，不会自动下载；手动下载保留原始文件名

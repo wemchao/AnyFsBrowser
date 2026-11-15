@@ -24,6 +24,9 @@
 
       <main class="settings-content">
         <header>
+          <button id="settingsBackButton" class="settings-back-button" type="button">
+            ← 返回主页
+          </button>
           <h1>通用设置</h1>
           <p>设置会自动保存，并应用到所有插件窗口。</p>
         </header>
@@ -66,8 +69,8 @@
 
         <section class="settings-section markdown-settings-section">
           <div class="section-title">
-            <h2>Markdown 默认版式</h2>
-            <p>文档打开时采用此版式；预览页上的临时切换不会修改这里。</p>
+            <h2>文档默认显示</h2>
+            <p>Markdown 与 HTML 打开时采用这里设置的默认视图。</p>
           </div>
           <div class="setting-row">
             <div>
@@ -82,6 +85,61 @@
               <label>
                 <input type="radio" name="markdownDefaultLayout" value="reading">
                 <span>阅读模式</span>
+              </label>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>HTML 默认视图</strong>
+              <span>页面模式可交互运行，源码模式用于直接阅读 HTML 代码</span>
+            </div>
+            <div class="layout-setting">
+              <label>
+                <input type="radio" name="htmlDefaultViewMode" value="rendered">
+                <span>页面</span>
+              </label>
+              <label>
+                <input type="radio" name="htmlDefaultViewMode" value="source">
+                <span>源码</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-title">
+            <h2>文本编辑</h2>
+            <p>适用于文本、代码、JSON、Markdown 和 HTML 文件。</p>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>默认打开模式</strong>
+              <span>文件可写时默认进入编辑模式；只读文件始终使用阅读模式</span>
+            </div>
+            <div class="layout-setting">
+              <label>
+                <input type="radio" name="textDefaultMode" value="edit">
+                <span>编辑模式</span>
+              </label>
+              <label>
+                <input type="radio" name="textDefaultMode" value="read">
+                <span>阅读模式</span>
+              </label>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>保存方式</strong>
+              <span>自动保存仅在内容修改后触发，停止输入 1 秒后写入</span>
+            </div>
+            <div class="layout-setting">
+              <label>
+                <input type="radio" name="textSaveMode" value="manual">
+                <span>手动保存</span>
+              </label>
+              <label>
+                <input type="radio" name="textSaveMode" value="auto">
+                <span>自动保存</span>
               </label>
             </div>
           </div>
