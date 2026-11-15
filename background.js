@@ -3,11 +3,45 @@ chrome.action.onClicked.addListener(async () => {
   await chrome.tabs.create({ url, active: true });
 });
 
+const COPY_IMAGE_MENU_ID = "anyfs-copy-image";
+const appPagePorts = new Map();
+
+function setupImageContextMenu() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.runtime.lastError;
+    chrome.contextMenus.create({
+      id: COPY_IMAGE_MENU_ID,
+      title: "复制图像（AnyFs Browser）",
+      contexts: ["page", "image"],
+      documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
+    });
+  });
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   if (reason !== "install") return;
   await chrome.tabs.create({
     url: chrome.runtime.getURL("setup.html"),
     active: true,
+  });
+});
+
+setupImageContextMenu();
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "anyfs-app-page" || !port.sender?.tab?.id) return;
+  const tabId = port.sender.tab.id;
+  appPagePorts.set(tabId, port);
+  port.onDisconnect.addListener(() => {
+    if (appPagePorts.get(tabId) === port) appPagePorts.delete(tabId);
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== COPY_IMAGE_MENU_ID || !tab?.id) return;
+  appPagePorts.get(tab.id)?.postMessage({
+    type: "copyImageFromContextMenu",
+    srcUrl: info.srcUrl || "",
   });
 });
 

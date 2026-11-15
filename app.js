@@ -714,6 +714,53 @@ async function copyImageToClipboard(entry, preferredUrl = "") {
   }
 }
 
+function findImageEntryById(id) {
+  if (!id) return null;
+  const queue = state.directoryRoot ? [state.directoryRoot] : [];
+  const seen = new Set();
+  while (queue.length) {
+    const node = queue.shift();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    const entry = node.entries?.find((item) => item.id === id);
+    if (entry?.type === "image") return entry;
+    queue.push(...(node.children || []));
+  }
+  return state.entries.find((entry) => entry.id === id && entry.type === "image") || null;
+}
+
+function copyImageFromContextMenu(srcUrl) {
+  if (!elements.viewerView.classList.contains("hidden")) {
+    copyImageToClipboard(
+      state.images[state.currentIndex],
+      state.viewerImageUrl,
+    );
+    return;
+  }
+  let id = "";
+  try {
+    id = new URL(srcUrl).searchParams.get("id") || "";
+  } catch {
+    // The menu may have been opened outside an image element.
+  }
+  const entry = findImageEntryById(id);
+  if (entry) copyImageToClipboard(entry);
+  else showToast("请在图片上使用“复制图像”");
+}
+
+function connectImageContextMenu() {
+  if (!IS_EXTENSION) return;
+  const port = chrome.runtime.connect({ name: "anyfs-app-page" });
+  port.onMessage.addListener((message) => {
+    if (message?.type === "copyImageFromContextMenu") {
+      copyImageFromContextMenu(message.srcUrl || "");
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    setTimeout(connectImageContextMenu, 500);
+  });
+}
+
 function showHome() {
   closeViewer(false);
   closeFileViewer(false);
@@ -3049,6 +3096,7 @@ globalThis.chrome?.storage?.onChanged?.addListener((changes, area) => {
 });
 
 setupSidebarResizer();
+connectImageContextMenu();
 
 async function init() {
   await Promise.all([loadFavorites(), loadS3Configs(), loadInterfaceStyle()]);
