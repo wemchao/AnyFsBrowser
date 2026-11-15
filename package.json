@@ -1,8 +1,8 @@
 {
-  "name": "anyfs-viewer",
+  "name": "anyfs-browser",
   "version": "0.1.0",
   "private": true,
-  "description": "AnyFS Viewer for local, SSH, S3 and OSS files",
+  "description": "AnyFs Browser for local, SSH, S3 and OSS files",
   "scripts": {
     "start": "node native/server.js",
     "dev": "IMAGE_VIEWER_PORT=39281 node --watch native/server.js",

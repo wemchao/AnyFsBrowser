@@ -189,7 +189,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then((result) => sendResponse({ ok: true, ...result }))
     .catch((error) => sendResponse({
       ok: false,
-      error: `${error.message}。请先安装 AnyFS Viewer 的原生辅助程序。`,
+      error: `${error.message}。请先安装 AnyFs Browser 的原生辅助程序。`,
     }));
   return true;
 });

@@ -67,7 +67,7 @@ function createStorageLink(uri, label) {
   anchor.dataset.multifunctionStorageUri = uri;
   anchor.href = "#";
   anchor.textContent = label;
-  anchor.title = "在 AnyFS Viewer 中打开";
+  anchor.title = "在 AnyFs Browser 中打开";
   return anchor;
 }
 
@@ -99,7 +99,7 @@ function bindAnchors(root) {
     if (!uri) continue;
     anchor.dataset.multifunctionStorageUri = uri;
     anchor.classList.add("multifunction-storage-link");
-    anchor.title ||= "在 AnyFS Viewer 中打开";
+    anchor.title ||= "在 AnyFs Browser 中打开";
   }
 }
 
@@ -221,7 +221,7 @@ async function onStorageActivate(event) {
     if (!result) {
       showStorageToast("插件后台尚未更新，请重新加载扩展并刷新当前网页");
     } else if (!result.ok) {
-      showStorageToast(result.error || "无法打开 AnyFS Viewer");
+      showStorageToast(result.error || "无法打开 AnyFs Browser");
     }
   } catch (error) {
     const invalidated = /context invalidated|receiving end does not exist/i.test(
@@ -230,7 +230,7 @@ async function onStorageActivate(event) {
     showStorageToast(
       invalidated
         ? "插件刚刚更新，请刷新当前网页后重试"
-        : `无法连接 AnyFS Viewer：${error?.message || "未知错误"}`,
+        : `无法连接 AnyFs Browser：${error?.message || "未知错误"}`,
     );
   } finally {
     setTimeout(() => {

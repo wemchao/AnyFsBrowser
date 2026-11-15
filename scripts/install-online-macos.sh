@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPOSITORY="wemchao/AnyFSViewer"
-ASSET_URL="https://github.com/$REPOSITORY/releases/latest/download/AnyFSViewer-lite.zip"
-SUPPORT_DIR="$HOME/Library/Application Support/AnyFS Viewer"
+REPOSITORY="wemchao/AnyFsBrowser"
+ASSET_URL="https://github.com/$REPOSITORY/releases/latest/download/AnyFsBrowser-lite.zip"
+SUPPORT_DIR="$HOME/Library/Application Support/AnyFs Browser"
 INSTALL_DIR="$SUPPORT_DIR/app"
 TEMP_DIR="$(mktemp -d)"
 
@@ -23,14 +23,14 @@ if (( NODE_MAJOR < 20 )); then
   exit 1
 fi
 
-echo "正在从 GitHub 下载 AnyFS Viewer…"
+echo "正在从 GitHub 下载 AnyFs Browser…"
 curl --fail --location --silent --show-error \
   --retry 3 \
   "$ASSET_URL" \
   --output "$TEMP_DIR/release.zip"
 unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/release"
 
-SOURCE_DIR="$TEMP_DIR/release/AnyFSViewer-lite"
+SOURCE_DIR="$TEMP_DIR/release/AnyFsBrowser-lite"
 if [[ ! -f "$SOURCE_DIR/install-macos.sh" ]]; then
   echo "安装包内容不完整。" >&2
   exit 1
