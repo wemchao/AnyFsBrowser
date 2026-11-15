@@ -3705,7 +3705,11 @@ function decodeGenericText(arrayBuffer) {
     if (byte < 9 || (byte > 13 && byte < 32)) controlCharacters += 1;
   }
   if (sample.length && controlCharacters / sample.length > 0.03) return null;
-  return new TextDecoder("utf-8").decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 async function inspectGenericFile(url, signal) {
@@ -3714,9 +3718,18 @@ async function inspectGenericFile(url, signal) {
     headers: { Range: "bytes=0-65535" },
   });
   if (!response.ok) throw new Error(`文件类型检测失败 (${response.status})`);
-  const totalSize = Number(
+  const rangeSize = Number(
     response.headers.get("Content-Range")?.match(/\/(\d+)$/)?.[1],
   );
+  const contentLengthHeader = response.headers.get("Content-Length");
+  const contentLength = contentLengthHeader === null
+    ? undefined
+    : Number(contentLengthHeader);
+  const totalSize = Number.isFinite(rangeSize)
+    ? rangeSize
+    : Number.isFinite(contentLength)
+      ? contentLength
+      : undefined;
   const reader = response.body?.getReader();
   if (!reader) {
     const buffer = await response.arrayBuffer();
@@ -3800,10 +3813,7 @@ async function openFileViewer(entry) {
   state.filePreviewController = controller;
   const url = apiUrl("/api/file", { id: entry.id });
   let kind = formattedFileKind(entry);
-  if (
-    kind === "generic" &&
-    (!Number.isFinite(entry.size) || entry.size > state.maxTextPreviewBytes)
-  ) {
+  if (kind === "generic") {
     try {
       const inspection = await inspectGenericFile(url, controller.signal);
       if (Number.isFinite(inspection.size)) entry.size = inspection.size;
