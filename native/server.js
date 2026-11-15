@@ -6,7 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { once } = require("node:events");
-const { Readable } = require("node:stream");
+const { Readable, Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const {
   S3Client,
@@ -44,6 +44,7 @@ const jobs = new Map();
 let browserImageQueue = Promise.resolve();
 const remoteAgents = new RemoteAgentManager();
 const remoteBrowserImages = new Map();
+const browserImageProgress = new Map();
 const htmlRenderSessions = new Map();
 const archiveListings = new Map();
 const downloadSelections = new Map();
@@ -782,7 +783,18 @@ async function listS3(source, recursive) {
   return { targetType: "directory", entries: sortedEntries };
 }
 
-async function downloadRemote(descriptor, destination) {
+function progressMeter(total, onProgress) {
+  let received = 0;
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      received += chunk.length;
+      onProgress?.(received, total);
+      callback(null, chunk);
+    },
+  });
+}
+
+async function downloadRemote(descriptor, destination, onProgress) {
   const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
   await fsp.mkdir(path.dirname(destination), { recursive: true });
 
@@ -799,6 +811,10 @@ async function downloadRemote(descriptor, destination) {
     }
     await pipeline(
       Readable.fromWeb(remoteResponse.body),
+      progressMeter(
+        Number(remoteResponse.headers.get("Content-Length")) || descriptor.size,
+        onProgress,
+      ),
       fs.createWriteStream(temporary, { flags: "wx" }),
     );
     const stat = await fsp.stat(temporary);
@@ -812,7 +828,7 @@ async function downloadRemote(descriptor, destination) {
   }
 }
 
-async function downloadS3(descriptor, destination) {
+async function downloadS3(descriptor, destination, onProgress) {
   const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
   await fsp.mkdir(path.dirname(destination), { recursive: true });
   try {
@@ -822,7 +838,11 @@ async function downloadS3(descriptor, destination) {
       Key: descriptor.key,
     }));
     if (!result.Body) throw new HttpError(502, "对象存储返回了空文件");
-    await pipeline(result.Body, fs.createWriteStream(temporary, { flags: "wx" }));
+    await pipeline(
+      result.Body,
+      progressMeter(Number(result.ContentLength) || descriptor.size, onProgress),
+      fs.createWriteStream(temporary, { flags: "wx" }),
+    );
     const stat = await fsp.stat(temporary);
     if (Number.isFinite(descriptor.size) && stat.size !== descriptor.size) {
       throw new HttpError(502, "对象原始文件下载不完整");
@@ -896,7 +916,7 @@ async function materializeArchiveMember(descriptor) {
   return destination;
 }
 
-async function materialize(descriptor) {
+async function materialize(descriptor, onProgress) {
   if (descriptor.kind === "archive") {
     return materializeArchiveMember(descriptor);
   }
@@ -911,11 +931,14 @@ async function materialize(descriptor) {
   const key = sha256(JSON.stringify(descriptor));
   const destination = path.join(REMOTE_DIR, `${key}${extension}`);
   const existing = await fsp.stat(destination).catch(() => null);
-  if (existing?.isFile() && existing.size > 0) return destination;
+  if (existing?.isFile() && existing.size > 0) {
+    onProgress?.(existing.size, existing.size);
+    return destination;
+  }
   await singleJob(`remote:${key}`, () => (
     descriptor.kind === "s3"
-      ? downloadS3(descriptor, destination)
-      : downloadRemote(descriptor, destination)
+      ? downloadS3(descriptor, destination, onProgress)
+      : downloadRemote(descriptor, destination, onProgress)
   ));
   return destination;
 }
@@ -1433,6 +1456,21 @@ function queueBrowserImage(task) {
   return result;
 }
 
+function updateBrowserImageProgress(progressId, update) {
+  if (!progressId) return;
+  browserImageProgress.set(progressId, {
+    ...(browserImageProgress.get(progressId) || {}),
+    ...update,
+    updatedAt: Date.now(),
+  });
+}
+
+function finishBrowserImageProgress(progressId, update = {}) {
+  if (!progressId) return;
+  updateBrowserImageProgress(progressId, { ...update, done: true });
+  setTimeout(() => browserImageProgress.delete(progressId), 60 * 1000).unref();
+}
+
 async function createThumbnail(descriptor, destination) {
   if (descriptor.kind === "ssh") {
     const response = await remoteAgents.fetch(descriptor, "/thumbnail", {
@@ -1474,12 +1512,23 @@ async function getThumbnail(descriptor) {
   return destination;
 }
 
-async function prepareBrowserImage(descriptor, requestedMaxDimension) {
+async function prepareBrowserImage(descriptor, requestedMaxDimension, progressId) {
   const maxDimension = Math.max(
     2048,
     Math.min(16384, Number(requestedMaxDimension) || 8192),
   );
+  updateBrowserImageProgress(progressId, {
+    phase: "metadata",
+    label: "正在读取图片信息",
+    received: 0,
+    total: Number(descriptor.size) || 0,
+    done: false,
+  });
   if (descriptor.kind === "ssh") {
+    updateBrowserImageProgress(progressId, {
+      phase: "remote",
+      label: "远程主机正在分析并准备图片",
+    });
     const info = await remoteAgents.json(descriptor, "/image-info", {
       path: descriptor.path,
       maxDimension,
@@ -1491,11 +1540,32 @@ async function prepareBrowserImage(descriptor, requestedMaxDimension) {
         cacheName: info.cacheName,
         format: info.format,
       });
+      finishBrowserImageProgress(progressId, {
+        phase: "ready",
+        label: "远程清晰图已准备完成",
+      });
       return { ...info, key };
     }
+    finishBrowserImageProgress(progressId, {
+      phase: "ready",
+      label: "图片信息读取完成",
+    });
     return info;
   }
-  const input = await materialize(descriptor);
+  const input = await materialize(descriptor, (received, total) => {
+    updateBrowserImageProgress(progressId, {
+      phase: "download",
+      label: "正在读取原始图片",
+      received,
+      total: Number(total) || Number(descriptor.size) || 0,
+    });
+  });
+  updateBrowserImageProgress(progressId, {
+    phase: "metadata",
+    label: "正在分析图片尺寸",
+    received: 0,
+    total: 0,
+  });
   const metadata = await sharp(input, { limitInputPixels: false }).metadata();
   const originalWidth = metadata.autoOrient?.width || metadata.width;
   const originalHeight = metadata.autoOrient?.height || metadata.height;
@@ -1508,6 +1578,10 @@ async function prepareBrowserImage(descriptor, requestedMaxDimension) {
   const height = Math.max(1, Math.round(originalHeight * scale));
   const resized = scale < 1;
   if (!resized) {
+    finishBrowserImageProgress(progressId, {
+      phase: "ready",
+      label: "图片信息读取完成",
+    });
     return { resized, originalWidth, originalHeight, width, height };
   }
 
@@ -1515,11 +1589,30 @@ async function prepareBrowserImage(descriptor, requestedMaxDimension) {
   const key = sha256(`${JSON.stringify(descriptor)}:${maxDimension}:${format}`);
   const destination = path.join(BROWSER_IMAGE_DIR, `${key}.${format}`);
   if (!await fsp.stat(destination).catch(() => null)) {
+    updateBrowserImageProgress(progressId, {
+      phase: "queued",
+      label: "正在等待大图缩放任务",
+      received: 0,
+      total: 0,
+    });
     await singleJob(`browser-image:${key}`, async () => {
       await queueBrowserImage(async () => {
-        if (await fsp.stat(destination).catch(() => null)) return;
+        if (await fsp.stat(destination).catch(() => null)) {
+          updateBrowserImageProgress(progressId, {
+            phase: "ready",
+            label: "缩放图片已从缓存读取",
+          });
+          return;
+        }
         const temporary = `${destination}.${process.pid}.tmp.${format}`;
-        let pipeline = sharp(input, {
+        const inputStat = await fsp.stat(input);
+        updateBrowserImageProgress(progressId, {
+          phase: "resize-read",
+          label: "正在读取大图用于缩放",
+          received: 0,
+          total: inputStat.size,
+        });
+        let imagePipeline = sharp({
           limitInputPixels: false,
           sequentialRead: true,
           pages: 1,
@@ -1532,14 +1625,45 @@ async function prepareBrowserImage(descriptor, requestedMaxDimension) {
             withoutEnlargement: true,
             fastShrinkOnLoad: true,
           });
-        pipeline = format === "png"
-          ? pipeline.png({ compressionLevel: 1, adaptiveFiltering: false })
-          : pipeline.jpeg({ quality: 88 });
-        await pipeline.toFile(temporary);
+        imagePipeline = format === "png"
+          ? imagePipeline.png({ compressionLevel: 1, adaptiveFiltering: false })
+          : imagePipeline.jpeg({ quality: 88 });
+        const source = fs.createReadStream(input);
+        let read = 0;
+        source.on("data", (chunk) => {
+          read += chunk.length;
+          updateBrowserImageProgress(progressId, {
+            phase: "resize-read",
+            label: "正在读取大图用于缩放",
+            received: read,
+            total: inputStat.size,
+          });
+        });
+        source.on("end", () => {
+          updateBrowserImageProgress(progressId, {
+            phase: "encode",
+            label: "正在编码缩放图片",
+            received: inputStat.size,
+            total: inputStat.size,
+          });
+        });
+        source.on("error", (error) => imagePipeline.destroy(error));
+        const output = imagePipeline.toFile(temporary);
+        source.pipe(imagePipeline);
+        await output;
         await fsp.rename(temporary, destination);
       });
     });
+  } else {
+    updateBrowserImageProgress(progressId, {
+      phase: "ready",
+      label: "缩放图片已从缓存读取",
+    });
   }
+  finishBrowserImageProgress(progressId, {
+    phase: "ready",
+    label: "清晰浏览图准备完成",
+  });
   return {
     resized,
     originalWidth,
@@ -2488,15 +2612,44 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (url.pathname === "/api/browser-image-progress") {
+    const progressId = url.searchParams.get("progressId") || "";
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(progressId)) {
+      throw new HttpError(400, "图片进度 ID 无效");
+    }
+    sendJson(response, 200, browserImageProgress.get(progressId) || {
+      phase: "starting",
+      label: "正在启动图片处理",
+      received: 0,
+      total: 0,
+      done: false,
+    });
+    return;
+  }
+
   if (url.pathname === "/api/browser-image-info") {
+    const progressId = url.searchParams.get("progressId") || "";
+    if (progressId && !/^[A-Za-z0-9_-]{8,128}$/.test(progressId)) {
+      throw new HttpError(400, "图片进度 ID 无效");
+    }
     const descriptor = await ensureDescriptorVersion(
       decodeDescriptor(url.searchParams.get("id")),
     );
-    const info = await prepareBrowserImage(
-      descriptor,
-      url.searchParams.get("maxDimension"),
-    );
-    sendJson(response, 200, info);
+    try {
+      const info = await prepareBrowserImage(
+        descriptor,
+        url.searchParams.get("maxDimension"),
+        progressId,
+      );
+      sendJson(response, 200, info);
+    } catch (error) {
+      finishBrowserImageProgress(progressId, {
+        phase: "error",
+        label: error.message || "图片处理失败",
+        error: true,
+      });
+      throw error;
+    }
     return;
   }
 

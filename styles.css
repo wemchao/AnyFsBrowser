@@ -2140,6 +2140,38 @@ a.glass-button {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
 }
 
+.viewer-progress {
+  --progress: 0;
+  position: relative;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      var(--accent) calc(var(--progress) * 1%),
+      rgba(255, 255, 255, 0.13) 0
+    );
+}
+
+.viewer-progress::before {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: #11151d;
+  content: "";
+}
+
+.viewer-progress span {
+  position: relative;
+  z-index: 1;
+  color: #eef4ff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .viewer-error {
   max-width: 600px;
   color: var(--danger);

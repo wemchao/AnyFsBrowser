@@ -281,7 +281,9 @@
         <button id="previousButton" class="nav-button previous" type="button" aria-label="上一张">‹</button>
         <button id="nextButton" class="nav-button next" type="button" aria-label="下一张">›</button>
         <div id="viewerLoading" class="viewer-loading">
-          <div class="spinner"></div>
+          <div id="viewerProgress" class="viewer-progress" style="--progress: 0">
+            <span id="viewerProgressText">0%</span>
+          </div>
           <span id="viewerLoadingText">正在生成缩放预览…</span>
         </div>
         <div id="viewerError" class="viewer-error hidden"></div>

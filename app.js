@@ -178,6 +178,8 @@ const elements = {
   viewerMeta: $("#viewerMeta"),
   viewerNotice: $("#viewerNotice"),
   viewerLoading: $("#viewerLoading"),
+  viewerProgress: $("#viewerProgress"),
+  viewerProgressText: $("#viewerProgressText"),
   viewerLoadingText: $("#viewerLoadingText"),
   viewerError: $("#viewerError"),
   viewerCanvas: $("#viewer"),
@@ -4084,6 +4086,12 @@ function releaseViewerObjectUrl() {
   state.viewerObjectUrl = "";
 }
 
+function setViewerProgress(percent, label) {
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
+  elements.viewerProgress.style.setProperty("--progress", value.toFixed(1));
+  elements.viewerProgressText.textContent = label || `${Math.round(value)}%`;
+}
+
 async function receiveViewerImage(url, requestId) {
   releaseViewerObjectUrl();
   const controller = new AbortController();
@@ -4095,7 +4103,9 @@ async function receiveViewerImage(url, requestId) {
   if (!response.ok) throw new Error(`清晰图片接收失败 (${response.status})`);
   const total = Number(response.headers.get("Content-Length")) || 0;
   if (!response.body) {
+    setViewerProgress(0, "接收");
     const blob = await response.blob();
+    setViewerProgress(100);
     const objectUrl = URL.createObjectURL(blob);
     state.viewerObjectUrl = objectUrl;
     return objectUrl;
@@ -4123,6 +4133,8 @@ async function receiveViewerImage(url, requestId) {
         `正在接收清晰图片：${formatBytes(received)}` +
         `${total ? ` / ${formatBytes(total)}` : ""} · ` +
         `${formatBytes(bytesPerSecond)}/s`;
+      if (total) setViewerProgress(received / total * 100);
+      else setViewerProgress(0, "接收");
       lastBytes = received;
       lastTime = now;
     }
@@ -4133,10 +4145,68 @@ async function receiveViewerImage(url, requestId) {
   const blob = new Blob(chunks, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
   });
+  setViewerProgress(100);
   const objectUrl = URL.createObjectURL(blob);
   state.viewerObjectUrl = objectUrl;
   state.viewerFetchController = null;
   return objectUrl;
+}
+
+function imageProgressId() {
+  return globalThis.crypto?.randomUUID?.().replaceAll("-", "") ||
+    `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+
+async function trackBrowserImageProgress(progressId, requestId, control) {
+  const startedAt = performance.now();
+  let lastReceived = 0;
+  let lastSampleAt = startedAt;
+  while (!control.stopped && requestId === state.viewerRequestId) {
+    try {
+      const response = await fetch(apiUrl("/api/browser-image-progress", { progressId }), {
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const progress = await response.json();
+        if (control.stopped || requestId !== state.viewerRequestId) return;
+        const now = performance.now();
+        const elapsed = Math.max(0.1, (now - startedAt) / 1000);
+        let text = `${progress.label || "正在准备图片"} · ${elapsed.toFixed(1)} 秒`;
+        if (
+          ["download", "resize-read"].includes(progress.phase) &&
+          Number(progress.total) > 0
+        ) {
+          const received = Math.max(0, Number(progress.received) || 0);
+          const total = Number(progress.total);
+          const percent = Math.min(100, received / total * 100);
+          const speed = (received - lastReceived) * 1000 /
+            Math.max(1, now - lastSampleAt);
+          text =
+            `${progress.label}：${formatBytes(received)} / ${formatBytes(total)}` +
+            ` (${percent.toFixed(1)}%)` +
+            `${speed > 0 ? ` · ${formatBytes(speed)}/s` : ""}`;
+          setViewerProgress(percent);
+          lastReceived = received;
+          lastSampleAt = now;
+        } else if (progress.phase === "encode") {
+          setViewerProgress(100, "编码");
+        } else if (progress.phase === "metadata") {
+          setViewerProgress(0, "分析");
+        } else if (progress.phase === "queued") {
+          setViewerProgress(0, "等待");
+        } else if (progress.phase === "remote") {
+          setViewerProgress(0, "远程");
+        } else if (progress.phase === "ready") {
+          setViewerProgress(100);
+        }
+        elements.viewerLoadingText.textContent = text;
+        if (progress.done) return;
+      }
+    } catch {
+      // The primary image request owns reconnect and error handling.
+    }
+    await delay(250);
+  }
 }
 
 async function openViewer(recoveryAttempt = 0) {
@@ -4159,6 +4229,7 @@ async function openViewer(recoveryAttempt = 0) {
   elements.previousButton.classList.toggle("hidden", state.images.length <= 1);
   elements.nextButton.classList.toggle("hidden", state.images.length <= 1);
   elements.viewerLoading.classList.remove("hidden");
+  setViewerProgress(0);
   elements.viewerLoadingText.textContent = "正在打开图片…";
   elements.viewerNotice.textContent = "正在后台准备清晰浏览图…";
   elements.viewerNotice.classList.toggle(
@@ -4190,9 +4261,17 @@ async function openViewer(recoveryAttempt = 0) {
   }
 
   try {
+    const progressId = imageProgressId();
+    const progressControl = { stopped: false };
+    const progressTracking = trackBrowserImageProgress(
+      progressId,
+      requestId,
+      progressControl,
+    );
     const prepared = await api("/api/browser-image-info", {
       id: image.id,
       maxDimension: String(browserMaxImageDimension()),
+      progressId,
     }, 0, 4, (attempt) => {
       if (requestId !== state.viewerRequestId) return;
       elements.viewerLoading.classList.remove("hidden");
@@ -4201,6 +4280,8 @@ async function openViewer(recoveryAttempt = 0) {
       elements.viewerNotice.textContent = "缩略图仍可浏览，连接恢复后会自动加载清晰图片。";
       elements.viewerNotice.classList.remove("hidden");
     });
+    progressControl.stopped = true;
+    await progressTracking;
     if (
       requestId !== state.viewerRequestId ||
       elements.viewerView.classList.contains("hidden")
@@ -4222,6 +4303,7 @@ async function openViewer(recoveryAttempt = 0) {
         `${prepared.width}×${prepared.height}`
       )
       : "";
+    setViewerProgress(0);
     elements.viewerLoadingText.textContent = "正在接收清晰图片…";
     const receivedImageUrl = await receiveViewerImage(imageUrl, requestId);
     if (
@@ -4229,6 +4311,7 @@ async function openViewer(recoveryAttempt = 0) {
       elements.viewerView.classList.contains("hidden")
     ) return;
     state.viewerImageUrl = receivedImageUrl;
+    setViewerProgress(100, "解码");
     elements.viewerLoadingText.textContent = "正在解码清晰图片…";
     const removePreparedHandlers = () => {
       viewer.removeHandler("open", handlePreparedOpen);
