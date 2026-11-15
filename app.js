@@ -143,6 +143,7 @@ const elements = {
   videoPlayer: $("#videoPlayer"),
   fileFrame: $("#fileFrame"),
   copyFileTextButton: $("#copyFileTextButton"),
+  copyFilePathButton: $("#copyFilePathButton"),
   downloadFileButton: $("#downloadFileButton"),
   closeViewerButton: $("#closeViewerButton"),
   viewerHomeButton: $("#viewerHomeButton"),
@@ -3216,6 +3217,7 @@ async function openFileViewer(entry) {
   elements.fileHomeButton.classList.toggle("hidden", directFile);
   elements.fileView.classList.toggle("with-directory", !directFile);
   elements.fileViewName.textContent = entry.relativePath || entry.name;
+  elements.copyFilePathButton.title = `复制文件路径：${entryPathForCopy(entry)}`;
   elements.downloadFileButton.href = apiUrl("/api/file", {
     id: entry.id,
     download: "1",
@@ -3701,6 +3703,11 @@ elements.thumbnailSize.addEventListener("change", (event) => {
 elements.closeFileButton.addEventListener("click", () => closeFileViewer(true));
 elements.fileHomeButton.addEventListener("click", showHome);
 elements.copyFileTextButton.addEventListener("click", copyCurrentFileText);
+elements.copyFilePathButton.addEventListener("click", () => {
+  if (state.currentFileEntry) {
+    copyPath(entryPathForCopy(state.currentFileEntry), "文件");
+  }
+});
 elements.markdownLayoutWide.addEventListener("click", () => setMarkdownLayout("wide"));
 elements.markdownLayoutReading.addEventListener(
   "click",
