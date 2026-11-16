@@ -19,6 +19,12 @@ except ImportError:
     Image = None
     ImageOps = None
 
+try:
+    import cv2
+    cv2.setNumThreads(1)
+except ImportError:
+    cv2 = None
+
 
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff",
@@ -26,7 +32,15 @@ IMAGE_EXTENSIONS = {
 }
 CACHE_DIR = Path.home() / ".cache" / "multifunction-file-browser" / "images"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-RESIZE_LOCK = threading.Lock()
+RESIZE_CONCURRENCY = 8
+RESIZE_SEMAPHORE = threading.BoundedSemaphore(RESIZE_CONCURRENCY)
+RESIZE_LOCKS = {}
+RESIZE_LOCKS_GUARD = threading.Lock()
+
+
+def resize_lock(cache_name):
+    with RESIZE_LOCKS_GUARD:
+        return RESIZE_LOCKS.setdefault(cache_name, threading.Lock())
 
 
 def expand_path(value):
@@ -90,14 +104,43 @@ def list_path(target, recursive):
 
 
 def image_metadata(file_path):
-    if Image is None:
-        raise RuntimeError("Pillow is not installed on the remote host")
-    with Image.open(file_path) as image:
-        width, height = image.size
-        orientation = image.getexif().get(274)
-        if orientation in (5, 6, 7, 8):
-            width, height = height, width
-        return width, height, "A" in image.getbands()
+    if Image is not None:
+        with Image.open(file_path) as image:
+            width, height = image.size
+            orientation = image.getexif().get(274)
+            if orientation in (5, 6, 7, 8):
+                width, height = height, width
+            return width, height, "A" in image.getbands()
+    if cv2 is not None:
+        image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise RuntimeError("OpenCV cannot decode the image")
+        height, width = image.shape[:2]
+        has_alpha = len(image.shape) == 3 and image.shape[2] == 4
+        return width, height, has_alpha
+    raise RuntimeError("Neither OpenCV nor Pillow is installed on the remote host")
+
+
+def resize_with_opencv(file_path, destination, max_dimension, output_format):
+    flag = cv2.IMREAD_COLOR if output_format == "jpg" else cv2.IMREAD_UNCHANGED
+    image = cv2.imread(file_path, flag)
+    if image is None:
+        raise RuntimeError("OpenCV cannot decode the image")
+    height, width = image.shape[:2]
+    scale = min(1.0, max_dimension / width, max_dimension / height)
+    if scale < 1.0:
+        image = cv2.resize(
+            image,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    parameters = (
+        [cv2.IMWRITE_PNG_COMPRESSION, 1]
+        if output_format == "png"
+        else [cv2.IMWRITE_JPEG_QUALITY, 88]
+    )
+    if not cv2.imwrite(str(destination), image, parameters):
+        raise RuntimeError("OpenCV failed to encode the resized image")
 
 
 def resized_image(file_path, max_dimension, force=False, output_format_override=None):
@@ -123,16 +166,35 @@ def resized_image(file_path, max_dimension, force=False, output_format_override=
     ).hexdigest()
     cache_name = f"{cache_key}.{output_format}"
     destination = CACHE_DIR / cache_name
-    with RESIZE_LOCK:
+    with resize_lock(cache_name), RESIZE_SEMAPHORE:
         if not destination.exists():
-            temporary = CACHE_DIR / f"{cache_name}.{os.getpid()}.tmp"
-            with Image.open(file_path) as image:
-                image = ImageOps.exif_transpose(image)
-                image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
-                if output_format == "png":
-                    image.save(temporary, format="PNG", compress_level=1)
-                else:
-                    image.convert("RGB").save(temporary, format="JPEG", quality=88)
+            temporary = CACHE_DIR / (
+                f"{cache_key}.{os.getpid()}.{threading.get_ident()}.tmp.{output_format}"
+            )
+            opencv_error = None
+            if cv2 is not None:
+                try:
+                    resize_with_opencv(
+                        file_path,
+                        temporary,
+                        max_dimension,
+                        output_format,
+                    )
+                except Exception as error:
+                    opencv_error = error
+                    temporary.unlink(missing_ok=True)
+            if cv2 is None or opencv_error is not None:
+                if Image is None:
+                    raise opencv_error or RuntimeError(
+                        "Neither OpenCV nor Pillow is installed on the remote host"
+                    )
+                with Image.open(file_path) as image:
+                    image = ImageOps.exif_transpose(image)
+                    image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+                    if output_format == "png":
+                        image.save(temporary, format="PNG", compress_level=1)
+                    else:
+                        image.convert("RGB").save(temporary, format="JPEG", quality=88)
             os.replace(temporary, destination)
     return {
         "resized": resized,
@@ -221,7 +283,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if parsed.path == "/health":
-                self.send_json(200, {"ok": True, "pillow": Image is not None})
+                self.send_json(200, {
+                    "ok": True,
+                    "opencv": cv2 is not None,
+                    "pillow": Image is not None,
+                    "thumbnailConcurrency": RESIZE_CONCURRENCY,
+                })
             elif parsed.path == "/shutdown":
                 self.send_json(200, {"ok": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()

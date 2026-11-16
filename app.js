@@ -57,11 +57,16 @@ const state = {
   viewerFetchController: null,
   readyThumbnails: new Set(),
   thumbnailObserver: null,
+  thumbnailQueue: [],
+  activeThumbnailLoads: 0,
+  thumbnailGeneration: 0,
+  viewerLoadingTimer: null,
   filePreviewController: null,
   uploadInProgress: false,
   uploadPickerTarget: null,
   selectedItems: new Map(),
   selectionAnchorId: null,
+  directorySelectionMode: false,
   gallerySelectionItems: new Map(),
 };
 
@@ -537,7 +542,11 @@ function selectionItemForNode(node) {
 
 function syncSelectionUI() {
   const count = state.selectedItems.size;
-  elements.directoryTree.classList.toggle("multi-selection-active", count > 1);
+  if (count === 0) state.directorySelectionMode = false;
+  elements.directoryTree.classList.toggle(
+    "selection-active",
+    state.directorySelectionMode && count > 0,
+  );
   elements.selectionActions.classList.toggle("hidden", count === 0);
   elements.selectionCount.textContent = `已选择 ${count} 项`;
   elements.downloadDirectoryButton.disabled = count === 0;
@@ -561,6 +570,7 @@ function syncSelectionUI() {
 function clearSelection() {
   state.selectedItems.clear();
   state.selectionAnchorId = null;
+  state.directorySelectionMode = false;
   syncSelectionUI();
 }
 
@@ -2696,8 +2706,50 @@ async function openRoutedSource(source) {
   await openSource(source, false, { anchorFileInParent: true });
 }
 
+function pumpThumbnailQueue() {
+  const maximum = 8;
+  while (state.activeThumbnailLoads < maximum && state.thumbnailQueue.length) {
+    const job = state.thumbnailQueue.shift();
+    if (
+      job.generation !== state.thumbnailGeneration ||
+      !job.image.isConnected
+    ) continue;
+    state.activeThumbnailLoads += 1;
+    let settled = false;
+    const finish = (loaded) => {
+      if (settled) {
+        if (loaded && job.generation === state.thumbnailGeneration) {
+          state.readyThumbnails.add(job.image.dataset.id);
+          job.image.classList.add("loaded");
+        }
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      state.activeThumbnailLoads = Math.max(0, state.activeThumbnailLoads - 1);
+      if (loaded && job.generation === state.thumbnailGeneration) {
+        state.readyThumbnails.add(job.image.dataset.id);
+        job.image.classList.add("loaded");
+      }
+      pumpThumbnailQueue();
+    };
+    const timeout = setTimeout(() => finish(false), 30 * 1000);
+    job.image.onload = () => finish(true);
+    job.image.onerror = () => finish(false);
+    job.image.src = apiUrl("/api/thumbnail", { id: job.image.dataset.id });
+  }
+}
+
+function queueThumbnail(image, generation) {
+  state.thumbnailQueue.push({ image, generation });
+  pumpThumbnailQueue();
+}
+
 function renderGallery() {
   state.thumbnailObserver?.disconnect();
+  state.thumbnailGeneration += 1;
+  const thumbnailGeneration = state.thumbnailGeneration;
+  state.thumbnailQueue = [];
   elements.galleryGrid.replaceChildren();
   elements.galleryEmpty.classList.toggle("hidden", state.visibleEntries.length > 0);
   elements.imageCount.textContent = `${state.visibleEntries.length} / ${state.entries.length} 项`;
@@ -2706,11 +2758,7 @@ function renderGallery() {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const image = entry.target;
-      image.src = apiUrl("/api/thumbnail", { id: image.dataset.id });
-      image.onload = () => {
-        state.readyThumbnails.add(image.dataset.id);
-        image.classList.add("loaded");
-      };
+      queueThumbnail(image, thumbnailGeneration);
       observer.unobserve(image);
     }
   }, { rootMargin: "500px" });
@@ -4043,6 +4091,25 @@ function closeFileViewer(showDirectory = true) {
   }
 }
 
+function hideViewerLoading() {
+  clearTimeout(state.viewerLoadingTimer);
+  state.viewerLoadingTimer = null;
+  elements.viewerLoading.classList.add("hidden");
+}
+
+function showViewerLoadingAfterDelay(requestId, milliseconds = 180) {
+  hideViewerLoading();
+  state.viewerLoadingTimer = setTimeout(() => {
+    state.viewerLoadingTimer = null;
+    if (
+      requestId === state.viewerRequestId &&
+      !elements.viewerView.classList.contains("hidden")
+    ) {
+      elements.viewerLoading.classList.remove("hidden");
+    }
+  }, milliseconds);
+}
+
 function createViewer() {
   if (state.viewer) return state.viewer;
   state.viewer = OpenSeadragon({
@@ -4067,7 +4134,12 @@ function createViewer() {
     },
   });
   state.viewer.addHandler("open", () => {
-    elements.viewerLoading.classList.add("hidden");
+    hideViewerLoading();
+    if (!state.viewerImageUrl) {
+      const image = state.images[state.currentIndex];
+      if (image) state.readyThumbnails.add(image.id);
+      elements.viewerNotice.classList.remove("hidden");
+    }
   });
   return state.viewer;
 }
@@ -4239,7 +4311,7 @@ async function openViewer(recoveryAttempt = 0) {
   elements.viewerHomeButton.classList.toggle("hidden", directFile);
   elements.previousButton.classList.toggle("hidden", state.images.length <= 1);
   elements.nextButton.classList.toggle("hidden", state.images.length <= 1);
-  elements.viewerLoading.classList.remove("hidden");
+  showViewerLoadingAfterDelay(requestId);
   setViewerProgress(0);
   elements.viewerLoadingText.textContent = "正在打开图片…";
   elements.viewerNoticeProgress.classList.remove("hidden");
@@ -4255,7 +4327,7 @@ async function openViewer(recoveryAttempt = 0) {
 
   const viewer = createViewer();
   if (exceedsPreviewLimit(image.size, state.maxPreviewBytes)) {
-    elements.viewerLoading.classList.add("hidden");
+    hideViewerLoading();
     elements.viewerNotice.classList.add("hidden");
     elements.viewerError.textContent =
       `图片大小为 ${formatBytes(image.size)}，超过通用预览上限 ` +
@@ -4264,13 +4336,11 @@ async function openViewer(recoveryAttempt = 0) {
     elements.viewerError.classList.remove("hidden");
     return;
   }
-  if (state.readyThumbnails.has(image.id)) {
-    viewer.open({
-      type: "image",
-      url: apiUrl("/api/thumbnail", { id: image.id }),
-      buildPyramid: false,
-    });
-  }
+  viewer.open({
+    type: "image",
+    url: apiUrl("/api/thumbnail", { id: image.id }),
+    buildPyramid: false,
+  });
 
   try {
     const progressId = imageProgressId();
@@ -4333,7 +4403,7 @@ async function openViewer(recoveryAttempt = 0) {
     const handlePreparedOpen = () => {
       removePreparedHandlers();
       if (requestId !== state.viewerRequestId) return;
-      elements.viewerLoading.classList.add("hidden");
+      hideViewerLoading();
       elements.viewerNoticeProgress.classList.add("hidden");
       elements.viewerNoticeText.textContent = preparedNotice;
       elements.viewerNotice.classList.toggle("hidden", !preparedNotice);
@@ -4355,7 +4425,7 @@ async function openViewer(recoveryAttempt = 0) {
           return;
         }
       }
-      elements.viewerLoading.classList.add("hidden");
+      hideViewerLoading();
       elements.viewerError.textContent =
         `清晰图片加载失败：${event?.message || "连接无法恢复"}`;
       elements.viewerError.classList.remove("hidden");
@@ -4384,7 +4454,7 @@ async function openViewer(recoveryAttempt = 0) {
         return;
       }
     }
-    elements.viewerLoading.classList.add("hidden");
+    hideViewerLoading();
     elements.viewerError.textContent = state.readyThumbnails.has(image.id)
       ? `清晰图片加载失败，当前显示缩略图：${error.message}`
       : error.message;
@@ -4395,6 +4465,7 @@ async function openViewer(recoveryAttempt = 0) {
 function closeViewer(updateRoute = true) {
   if (elements.viewerView.classList.contains("hidden")) return;
   state.viewerRequestId += 1;
+  hideViewerLoading();
   releaseViewerObjectUrl();
   state.viewerImageUrl = "";
   state.viewer?.close();
@@ -4706,6 +4777,22 @@ function updateDirectorySelectionModifier(event) {
   );
 }
 
+elements.directoryTree.addEventListener("pointerdown", (event) => {
+  const target = event.target;
+  const row = target.closest?.(".directory-row");
+  if (!row) return;
+  const selectionCheckbox = target.closest?.(".directory-selection-checkbox");
+  const modifiedRowSelection =
+    (event.ctrlKey || event.metaKey || event.shiftKey) &&
+    !target.closest?.("button");
+  if (
+    event.button === 2 ||
+    selectionCheckbox ||
+    modifiedRowSelection
+  ) {
+    state.directorySelectionMode = true;
+  }
+});
 document.addEventListener("keydown", updateDirectorySelectionModifier);
 document.addEventListener("keyup", updateDirectorySelectionModifier);
 elements.directoryTree.addEventListener("pointerenter", updateDirectorySelectionModifier);

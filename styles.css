@@ -836,7 +836,7 @@ code {
 }
 
 .directory-tree.selection-modifier-active .directory-selection-checkbox,
-.directory-tree.multi-selection-active:hover .directory-selection-checkbox {
+.directory-tree.selection-active .directory-selection-checkbox {
   display: block;
 }
 
