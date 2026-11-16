@@ -537,7 +537,7 @@ function selectionItemForNode(node) {
 
 function syncSelectionUI() {
   const count = state.selectedItems.size;
-  document.body.classList.toggle("directory-multi-selection-active", count > 1);
+  elements.directoryTree.classList.toggle("multi-selection-active", count > 1);
   elements.selectionActions.classList.toggle("hidden", count === 0);
   elements.selectionCount.textContent = `已选择 ${count} 项`;
   elements.downloadDirectoryButton.disabled = count === 0;
@@ -4698,22 +4698,22 @@ document.addEventListener("paste", async (event) => {
   }
 });
 
-document.addEventListener("keydown", (event) => {
-  document.body.classList.toggle(
-    "directory-selection-modifier-active",
-    event.ctrlKey || event.metaKey || event.shiftKey,
+function updateDirectorySelectionModifier(event) {
+  elements.directoryTree.classList.toggle(
+    "selection-modifier-active",
+    elements.directoryTree.matches(":hover") &&
+      (event.ctrlKey || event.metaKey || event.shiftKey),
   );
-});
+}
 
-document.addEventListener("keyup", (event) => {
-  document.body.classList.toggle(
-    "directory-selection-modifier-active",
-    event.ctrlKey || event.metaKey || event.shiftKey,
-  );
+document.addEventListener("keydown", updateDirectorySelectionModifier);
+document.addEventListener("keyup", updateDirectorySelectionModifier);
+elements.directoryTree.addEventListener("pointerenter", updateDirectorySelectionModifier);
+elements.directoryTree.addEventListener("pointerleave", () => {
+  elements.directoryTree.classList.remove("selection-modifier-active");
 });
-
 window.addEventListener("blur", () => {
-  document.body.classList.remove("directory-selection-modifier-active");
+  elements.directoryTree.classList.remove("selection-modifier-active");
 });
 
 document.addEventListener("keydown", (event) => {

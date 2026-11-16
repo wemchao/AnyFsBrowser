@@ -835,8 +835,8 @@ code {
   cursor: pointer;
 }
 
-.directory-selection-modifier-active .directory-selection-checkbox,
-.directory-multi-selection-active .directory-selection-checkbox {
+.directory-tree.selection-modifier-active .directory-selection-checkbox,
+.directory-tree.multi-selection-active:hover .directory-selection-checkbox {
   display: block;
 }
 
