@@ -6,7 +6,8 @@ NODE="$(command -v node || true)"
 NPM="$(command -v npm || true)"
 HOST_NAME="com.wemchao.file_browser"
 EXTENSION_ID="bbdpmlabgaoebjojgmgglldcnlllgjjd"
-SUPPORT_DIR="$HOME/Library/Application Support/AnyFs Browser"
+OLD_SUPPORT_DIR="$HOME/Library/Application Support/AnyFs Browser"
+SUPPORT_DIR="$HOME/Library/Application Support/RemoteFs Explorer"
 LAUNCHER="$SUPPORT_DIR/native-host"
 
 if [[ -z "$NODE" || -z "$NPM" ]]; then
@@ -24,6 +25,9 @@ echo "安装本地运行依赖…"
 cd "$ROOT"
 "$NPM" install --omit=dev
 
+if [[ -d "$OLD_SUPPORT_DIR" && ! -e "$SUPPORT_DIR" ]]; then
+  mv "$OLD_SUPPORT_DIR" "$SUPPORT_DIR"
+fi
 mkdir -p "$SUPPORT_DIR"
 cat > "$LAUNCHER" <<LAUNCHER
 #!/bin/sh
@@ -41,7 +45,7 @@ do
   cat > "$BROWSER_DIR/$HOST_NAME.json" <<MANIFEST
 {
   "name": "$HOST_NAME",
-  "description": "AnyFs Browser 的本地、SSH、S3 和大图处理能力",
+  "description": "RemoteFs Explorer 的 SSH、S3、本地文件和大图处理能力",
   "path": "$LAUNCHER",
   "type": "stdio",
   "allowed_origins": [

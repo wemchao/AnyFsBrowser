@@ -1,8 +1,8 @@
 {
-  "name": "anyfs-browser",
+  "name": "remotefs-explorer",
   "version": "0.1.0",
   "private": true,
-  "description": "AnyFs Browser for local, SSH, S3 and OSS files",
+  "description": "RemoteFs Explorer for SSH, S3, OSS, MinIO and local files",
   "scripts": {
     "start": "node native/server.js",
     "dev": "IMAGE_VIEWER_PORT=39281 node --watch native/server.js",

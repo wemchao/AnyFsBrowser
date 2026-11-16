@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPOSITORY="wemchao/AnyFsBrowser"
-ASSET_URL="https://github.com/$REPOSITORY/releases/latest/download/AnyFsBrowser-lite.zip"
-SUPPORT_DIR="$HOME/Library/Application Support/AnyFs Browser"
+REPOSITORY="wemchao/RemoteFsExplorer"
+ASSET_URL="https://github.com/$REPOSITORY/releases/latest/download/RemoteFsExplorer-lite.zip"
+OLD_SUPPORT_DIR="$HOME/Library/Application Support/AnyFs Browser"
+SUPPORT_DIR="$HOME/Library/Application Support/RemoteFs Explorer"
 INSTALL_DIR="$SUPPORT_DIR/app"
 TEMP_DIR="$(mktemp -d)"
 
@@ -23,7 +24,7 @@ if (( NODE_MAJOR < 20 )); then
   exit 1
 fi
 
-echo "正在从 GitHub 下载 AnyFs Browser…"
+echo "正在从 GitHub 下载 RemoteFs Explorer…"
 if ! curl --fail --location --silent --show-error \
   --retry 3 \
   "$ASSET_URL" \
@@ -40,12 +41,15 @@ then
 fi
 unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/release"
 
-SOURCE_DIR="$TEMP_DIR/release/AnyFsBrowser-lite"
+SOURCE_DIR="$TEMP_DIR/release/RemoteFsExplorer-lite"
 if [[ ! -f "$SOURCE_DIR/install-macos.sh" ]]; then
   echo "安装包内容不完整。" >&2
   exit 1
 fi
 
+if [[ -d "$OLD_SUPPORT_DIR" && ! -e "$SUPPORT_DIR" ]]; then
+  mv "$OLD_SUPPORT_DIR" "$SUPPORT_DIR"
+fi
 mkdir -p "$SUPPORT_DIR"
 NEXT_DIR="$SUPPORT_DIR/app.next.$$"
 rm -rf "$NEXT_DIR"

@@ -1368,7 +1368,7 @@ function selectedZipName(descriptors) {
     return `archive:${encodeDescriptor(descriptor.archive)}`;
   };
   if (descriptors.some((item) => sourceKey(item) !== sourceKey(descriptors[0]))) {
-    return "AnyFs-selected.zip";
+    return "RemoteFs-selected.zip";
   }
   const parentPath = (descriptor) => {
     const sourcePath = descriptorSourcePath(descriptor).replace(/\/+$/, "");
@@ -1994,7 +1994,7 @@ async function saveTextFile(descriptor, content, contentType) {
       throw new HttpError(403, "该文本文件为只读，不能保存");
     }
     const temporary =
-      `${descriptor.path}.anyfs-${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
+      `${descriptor.path}.remotefs-${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
     let handle;
     try {
       handle = await fsp.open(temporary, "wx", stat.mode & 0o777);
@@ -2290,7 +2290,7 @@ async function handleRequest(request, response) {
   if (url.pathname === "/api/session") {
     if (request.method !== "GET") throw new HttpError(405, "只支持 GET 请求");
     if (!isTrustedAppRequest(request) && process.env.IMAGE_VIEWER_DEV !== "1") {
-      throw new HttpError(403, "只允许 AnyFs Browser 连接");
+      throw new HttpError(403, "只允许 RemoteFs Explorer 连接");
     }
     sendJson(response, 200, { token: SESSION_TOKEN, version: "0.1.0" });
     return;
@@ -2779,9 +2779,9 @@ async function main() {
     if (NATIVE_MODE) {
       setupNativeChannel(server);
       sendNativeMessage({ type: "ready", port: PORT, token: SESSION_TOKEN });
-      process.stderr.write(`AnyFs Browser native host listening on ${PORT}\n`);
+      process.stderr.write(`RemoteFs Explorer native host listening on ${PORT}\n`);
     } else {
-      console.log(`AnyFs Browser 开发服务已启动：http://files.localhost:${PORT}`);
+      console.log(`RemoteFs Explorer 开发服务已启动：http://files.localhost:${PORT}`);
       console.log(`缓存目录：${CACHE_ROOT}`);
     }
   });

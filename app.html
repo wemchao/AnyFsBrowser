@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AnyFs Browser</title>
+    <title>RemoteFs Explorer</title>
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/vendor/code-highlight.css">
     <link rel="stylesheet" href="/vendor/katex.min.css">
@@ -11,8 +11,8 @@
   <body>
     <header class="topbar">
       <button id="homeButton" class="brand" type="button" aria-label="返回首页">
-        <span class="brand-mark">H</span>
-        <span>AnyFs Browser</span>
+        <span class="brand-mark">R</span>
+        <span>RemoteFs Explorer</span>
       </button>
       <div id="locationBar" class="location-bar hidden">
         <button id="backButton" class="icon-button" type="button" title="返回">←</button>
@@ -35,16 +35,16 @@
     <main>
       <section id="homeView" class="home-view">
         <div class="hero">
-          <p class="eyebrow">LOCAL · SSH · S3 · 都能逛</p>
+          <p class="eyebrow">SSH · S3 · LOCAL · 随处可达</p>
           <h1>文件住哪儿不重要，点开就算到家。</h1>
-          <p class="hero-copy">本地硬盘、SSH、S3/MinIO 一锅端；常用路径收藏起来，下次少打几个字。</p>
+          <p class="hero-copy">SSH 主机、S3/MinIO、本地目录统一浏览；常用远程路径收藏起来，下次直接抵达。</p>
         </div>
 
         <form id="sourceForm" class="source-form">
           <div class="source-types" role="tablist" aria-label="来源类型">
-            <button class="source-type active" data-type="local" type="button">⌂ 本地目录</button>
-            <button class="source-type" data-type="ssh" type="button">SSH 主机</button>
+            <button class="source-type active" data-type="ssh" type="button">SSH 主机</button>
             <button class="source-type" data-type="s3" type="button">S3 / MinIO</button>
+            <button class="source-type" data-type="local" type="button">⌂ 本地目录</button>
           </div>
           <div id="s3ConfigFields" class="s3-config hidden">
             <div class="credentials-file-row">
@@ -110,7 +110,7 @@
             <label for="sourceInput">目录路径</label>
             <div class="source-row">
               <input id="sourceInput" name="source" type="text"
-                placeholder="/Users/me/data 或 user@host:~"
+                placeholder="user@host:~ 或 SSH别名:/path"
                 spellcheck="false" autocomplete="off" required>
               <button id="saveSourceButton" class="secondary" type="button">加入收藏</button>
               <button id="openButton" class="primary" type="submit">打开</button>

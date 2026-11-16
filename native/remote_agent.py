@@ -294,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             temporary = os.path.join(
                 parent,
-                f".{os.path.basename(target)}.anyfs-{os.getpid()}-{threading.get_ident()}.tmp",
+                f".{os.path.basename(target)}.remotefs-{os.getpid()}-{threading.get_ident()}.tmp",
             )
             remaining = length
             with open(temporary, "xb") as destination:

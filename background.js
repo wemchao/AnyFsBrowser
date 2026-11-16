@@ -3,9 +3,9 @@ chrome.action.onClicked.addListener(async () => {
   await chrome.tabs.create({ url, active: true });
 });
 
-const COPY_IMAGE_MENU_ID = "anyfs-copy-image";
-const COPY_IMAGE_PATH_MENU_ID = "anyfs-copy-image-path";
-const DOWNLOAD_IMAGE_MENU_ID = "anyfs-download-image";
+const COPY_IMAGE_MENU_ID = "remotefs-copy-image";
+const COPY_IMAGE_PATH_MENU_ID = "remotefs-copy-image-path";
+const DOWNLOAD_IMAGE_MENU_ID = "remotefs-download-image";
 const appPagePorts = new Map();
 
 function setupImageContextMenu() {
@@ -13,19 +13,19 @@ function setupImageContextMenu() {
     chrome.runtime.lastError;
     chrome.contextMenus.create({
       id: COPY_IMAGE_MENU_ID,
-      title: "复制图像（AnyFs Browser）",
+      title: "复制图像（RemoteFs Explorer）",
       contexts: ["page", "image"],
       documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
     });
     chrome.contextMenus.create({
       id: COPY_IMAGE_PATH_MENU_ID,
-      title: "复制图片路径（AnyFs Browser）",
+      title: "复制图片路径（RemoteFs Explorer）",
       contexts: ["page", "image"],
       documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
     });
     chrome.contextMenus.create({
       id: DOWNLOAD_IMAGE_MENU_ID,
-      title: "下载原图（AnyFs Browser）",
+      title: "下载原图（RemoteFs Explorer）",
       contexts: ["page", "image"],
       documentUrlPatterns: [`${chrome.runtime.getURL("app.html")}*`],
     });
@@ -43,7 +43,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
 setupImageContextMenu();
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== "anyfs-app-page" || !port.sender?.tab?.id) return;
+  if (port.name !== "remotefs-app-page" || !port.sender?.tab?.id) return;
   const tabId = port.sender.tab.id;
   appPagePorts.set(tabId, port);
   port.onDisconnect.addListener(() => {
@@ -244,7 +244,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then((result) => sendResponse({ ok: true, ...result }))
     .catch((error) => sendResponse({
       ok: false,
-      error: `${error.message}。请先安装 AnyFs Browser 的原生辅助程序。`,
+      error: `${error.message}。请先安装 RemoteFs Explorer 的原生辅助程序。`,
     }));
   return true;
 });

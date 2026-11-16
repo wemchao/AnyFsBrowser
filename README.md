@@ -1,6 +1,6 @@
-# AnyFs Browser
+# RemoteFs Explorer
 
-Chrome/Edge 多来源文件浏览插件。支持本地目录、SSH 主机和 S3/MinIO；超大图片超过浏览器上限时会按比例缩放并明确提示。
+Chrome/Edge 远程文件浏览插件。重点支持 SSH 主机和 S3/OSS/MinIO，同时兼容本地目录；超大图片超过浏览器上限时会按比例缩放并明确提示。
 
 ## 功能
 
@@ -70,7 +70,7 @@ Chrome/Edge 多来源文件浏览插件。支持本地目录、SSH 主机和 S3/
 要求 Node.js 20+。
 
 ```bash
-cd xxx/code/AnyFsBrowser
+cd xxx/code/RemoteFsExplorer
 bash scripts/install-macos.sh
 ```
 
@@ -79,9 +79,9 @@ bash scripts/install-macos.sh
 1. 打开 `chrome://extensions`（Edge 使用 `edge://extensions`）。
 2. 开启“开发者模式”。
 3. 选择“加载已解压的扩展程序”。
-4. 选择轻量扩展目录 `xxx/code/AnyFsBrowser/extension`。
+4. 选择轻量扩展目录 `xxx/code/RemoteFsExplorer/extension`。
 
-插件固定 ID 为 `bbdpmlabgaoebjojgmgglldcnlllgjjd`。点击浏览器工具栏中的“AnyFs Browser”即可使用；无需运行 `npm start`。
+插件固定 ID 为 `bbdpmlabgaoebjojgmgglldcnlllgjjd`。点击浏览器工具栏中的“RemoteFs Explorer”即可使用；无需运行 `npm start`。
 
 不要直接加载项目根目录：根目录中的 `node_modules` 仅供本地辅助程序使用，会让浏览器错误地显示两百多 MB 的扩展体积。`extension` 只包含浏览器需要的文件。
 
@@ -92,7 +92,7 @@ bash scripts/install-macos.sh
 当前可将完整项目目录打包给其他 macOS 用户。对方安装 Node.js 20+ 后运行：
 
 ```bash
-cd xxx/AnyFsBrowser
+cd xxx/RemoteFsExplorer
 bash scripts/install-macos.sh
 ```
 
@@ -104,7 +104,7 @@ bash scripts/install-macos.sh
 npm run build:lite
 ```
 
-生成位置为 `xxx/code/AnyFsBrowser-lite`。该目录包含轻量扩展、完整 Native Host 和安装脚本，可以直接整体发送给其他 macOS 用户。
+生成位置为 `xxx/code/RemoteFsExplorer-lite`。该目录包含轻量扩展、完整 Native Host 和安装脚本，可以直接整体发送给其他 macOS 用户。
 
 正式对外发布时，推荐：
 
@@ -117,7 +117,7 @@ npm run build:lite
 公开发布后，用户可在终端运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wemchao/AnyFsBrowser/main/scripts/install-online-macos.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wemchao/RemoteFsExplorer/main/scripts/install-online-macos.sh | bash
 ```
 
 在线脚本会下载 GitHub Release 中的完整轻量运行包，安装到用户目录并注册 Native Host。

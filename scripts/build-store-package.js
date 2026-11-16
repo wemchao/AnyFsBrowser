@@ -14,10 +14,10 @@ async function main() {
   const output = path.join(
     os.homedir(),
     "Desktop",
-    `AnyFsBrowser-extension-${manifest.version}.zip`,
+    `RemoteFsExplorer-extension-${manifest.version}.zip`,
   );
   const temporaryDirectory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "anyfs-browser-store-"),
+    path.join(os.tmpdir(), "remotefs-explorer-store-"),
   );
 
   try {

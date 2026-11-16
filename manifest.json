@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "AnyFs Browser",
+  "name": "RemoteFs Explorer",
   "version": "0.1.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA91ZDnNIy0wUfCxehYM/BcQbct+ZtCFuEiWNBsvrDlt5W2lxoH27bRj4kHKsZ4aPUzyGz5Us3iuiTy351LBfYsB4gDvpdfgSaCevONuRxFObkYFB4iD+5ocsQYSQkwS3bGY/jh5NymPDf29bhdMVALyozbu4FLNW+DCSfqFIpquQmYxms6A1u34er1onvOtQHvcejxxQD1CnXamvz6sfNCAcf8TMJqzf41Ls8IbC9cxXxo7dV9GGy/o0AUipfmEGvMCNZ7fP86ndjbP7//zjjJ7a86j/1KxJQprbjyYMRrrHJhIGMybxqyqx8hls4AnO4U3A4NjWh53jgycc9JChpTQIDAQAB",
-  "description": "统一浏览本地、SSH 和 S3/OSS 文件，支持超大图片流畅缩放。",
+  "description": "统一浏览 SSH、S3/OSS/MinIO 和本地文件，支持预览、编辑与超大图片缩放。",
   "permissions": [
     "storage",
     "nativeMessaging",
@@ -15,7 +15,7 @@
     "http://127.0.0.1/*"
   ],
   "action": {
-    "default_title": "打开 AnyFs Browser"
+    "default_title": "打开 RemoteFs Explorer"
   },
   "background": {
     "service_worker": "background.js"

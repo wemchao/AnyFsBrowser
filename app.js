@@ -21,7 +21,7 @@ const state = {
   activeS3Node: null,
   homeDirectory: "",
   sourceInputs: { local: "", ssh: "" },
-  sourceMode: "local",
+  sourceMode: "ssh",
   source: "",
   targetType: "",
   directoryRoot: null,
@@ -1233,7 +1233,7 @@ function downloadImageFromContextMenu(srcUrl) {
 
 function connectImageContextMenu() {
   if (!IS_EXTENSION) return;
-  const port = chrome.runtime.connect({ name: "anyfs-app-page" });
+  const port = chrome.runtime.connect({ name: "remotefs-app-page" });
   port.onMessage.addListener((message) => {
     if (message?.type === "copyImageFromContextMenu") {
       copyImageFromContextMenu(message.srcUrl || "");
