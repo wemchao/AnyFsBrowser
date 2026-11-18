@@ -10,11 +10,12 @@
     "build:extension": "npm run prepare:extension && node scripts/build-extension.js",
     "build:store": "npm run build:extension && node scripts/build-store-package.js",
     "build:lite": "npm run build:extension && node scripts/build-lite-release.js",
-    "test": "node --check native/server.js && node --check native/remote-agent.js && node --check app.js && node --check options.js && node --check setup.js && node --check background.js && node --check object-storage-links.js && node --check scripts/build-extension.js && node --check scripts/build-store-package.js && node --check scripts/build-lite-release.js && python3 -c \"import ast; ast.parse(open('native/remote_agent.py').read())\""
+    "test": "node --check native/server.js && node --check native/video-timing.js && node --check native/video-transcode.js && node --check native/remote-agent.js && node --check app.js && node --check options.js && node --check setup.js && node --check background.js && node --check object-storage-links.js && node --check scripts/build-extension.js && node --check scripts/build-store-package.js && node --check scripts/build-lite-release.js && python3 -c \"import ast; ast.parse(open('native/remote_agent.py').read())\" && node --test native/video-timing.test.js native/video-transcode.test.js scripts/markdown-rendering.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.940.0",
     "@aws-sdk/credential-providers": "^3.940.0",
+    "ffmpeg-static": "^5.3.0",
     "highlight.js": "^11.12.0",
     "jszip": "^3.10.2",
     "katex": "^0.19.1",

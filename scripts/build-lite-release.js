@@ -10,6 +10,7 @@ const RUNTIME_PACKAGE = {
   dependencies: {
     "@aws-sdk/client-s3": "^3.940.0",
     "@aws-sdk/credential-providers": "^3.940.0",
+    "ffmpeg-static": "^5.3.0",
     sharp: "^0.35.5",
     "zip-stream": "^7.0.5",
   },
@@ -23,6 +24,7 @@ const README = `# RemoteFs Explorer（轻量发布版）
 - 本地、SSH、S3/OSS/MinIO 文件浏览
 - 大图缩放、缩略图和原始图片缓存
 - Markdown、JSON、代码、Office、PDF 和视频预览
+- OpenCV 视频编码不兼容时自动转为 H.264 播放
 - 网页 S3/OSS 链接点击打开
 
 ## 安装
@@ -40,7 +42,7 @@ bash install-macos.sh
 3. 选择“加载已解压的扩展程序”。
 4. 选择当前目录中的 \`extension\` 文件夹。
 
-首次安装脚本会联网下载约三项本地运行依赖。之后无需启动任何脚本，浏览器会自动启动和关闭本地辅助程序。
+首次安装脚本会联网下载本地运行依赖。之后无需启动任何脚本，浏览器会自动启动和关闭本地辅助程序。
 
 ## 路径示例
 

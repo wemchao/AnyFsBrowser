@@ -37,6 +37,20 @@
       "match_origin_as_fallback": true
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "app.html",
+        "app.js",
+        "styles.css",
+        "vendor/*"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ],
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true

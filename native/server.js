@@ -19,6 +19,8 @@ const { fromIni } = require("@aws-sdk/credential-providers");
 const ZipStream = require("zip-stream").default;
 const sharp = require("sharp");
 const { RemoteAgentManager } = require("./remote-agent");
+const { readVideoTiming, readIsoTimingFromReader } = require("./video-timing");
+const { probeVideo, transcodeVideo } = require("./video-transcode");
 
 sharp.concurrency(Math.max(
   1,
@@ -38,9 +40,13 @@ const THUMBNAIL_DIR = path.join(CACHE_ROOT, "thumbnails");
 const BROWSER_IMAGE_DIR = path.join(CACHE_ROOT, "browser-images");
 const DEEP_ZOOM_DIR = path.join(CACHE_ROOT, "deepzoom");
 const REMOTE_DIR = path.join(CACHE_ROOT, "remote");
+const VIDEO_DIR = path.join(CACHE_ROOT, "browser-videos");
 const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff",
   ".gif", ".bmp", ".avif", ".heic", ".heif", ".svg",
+]);
+const VIDEO_EXTENSIONS = new Set([
+  ".mp4", ".webm", ".mov", ".m4v", ".ogv", ".ogg", ".avi", ".mkv",
 ]);
 const ARCHIVE_SUFFIXES = [
   ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz", ".tar", ".zip",
@@ -50,6 +56,7 @@ let browserImageQueue = Promise.resolve();
 const remoteAgents = new RemoteAgentManager();
 const remoteBrowserImages = new Map();
 const browserImageProgress = new Map();
+const fileCacheProgress = new Map();
 const htmlRenderSessions = new Map();
 const archiveListings = new Map();
 const downloadSelections = new Map();
@@ -921,6 +928,29 @@ async function materializeArchiveMember(descriptor) {
   return destination;
 }
 
+function materializedDestination(descriptor) {
+  if (descriptor.kind === "local") return descriptor.path;
+  if (descriptor.kind === "archive") {
+    const extension = path.posix.extname(descriptor.member).toLowerCase();
+    const key = sha256(JSON.stringify(descriptor));
+    return path.join(REMOTE_DIR, `archive-${key}${extension}`);
+  }
+  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
+  const extension = path.posix.extname(sourcePath).toLowerCase();
+  const key = sha256(JSON.stringify(descriptor));
+  return path.join(REMOTE_DIR, `${key}${extension}`);
+}
+
+function rememberFileCache(descriptor, received, total, done, error = "") {
+  fileCacheProgress.set(sha256(JSON.stringify(descriptor)), {
+    received: Number(received) || 0,
+    total: Number(total) || 0,
+    done: Boolean(done),
+    error: error || "",
+    updatedAt: Date.now(),
+  });
+}
+
 async function materialize(descriptor, onProgress) {
   if (descriptor.kind === "archive") {
     return materializeArchiveMember(descriptor);
@@ -931,26 +961,71 @@ async function materialize(descriptor, onProgress) {
     return descriptor.path;
   }
 
-  const sourcePath = descriptor.kind === "s3" ? descriptor.key : descriptor.path;
-  const extension = path.posix.extname(sourcePath).toLowerCase();
   const key = sha256(JSON.stringify(descriptor));
-  const destination = path.join(REMOTE_DIR, `${key}${extension}`);
+  const destination = materializedDestination(descriptor);
   const existing = await fsp.stat(destination).catch(() => null);
   if (existing?.isFile() && existing.size > 0) {
+    rememberFileCache(descriptor, existing.size, existing.size, true);
     onProgress?.(existing.size, existing.size);
     return destination;
   }
+  const report = (received, total) => {
+    rememberFileCache(descriptor, received, total, false);
+    onProgress?.(received, total);
+  };
   await singleJob(`remote:${key}`, () => (
     descriptor.kind === "s3"
-      ? downloadS3(descriptor, destination, onProgress)
-      : downloadRemote(descriptor, destination, onProgress)
+      ? downloadS3(descriptor, destination, report)
+      : downloadRemote(descriptor, destination, report)
   ));
+  const stat = await fsp.stat(destination);
+  rememberFileCache(descriptor, stat.size, stat.size, true);
   return destination;
 }
 
 function descriptorIsImage(descriptor) {
   const sourcePath = descriptorSourcePath(descriptor);
   return IMAGE_EXTENSIONS.has(path.posix.extname(sourcePath || "").toLowerCase());
+}
+
+function descriptorIsVideo(descriptor) {
+  const sourcePath = descriptorSourcePath(descriptor);
+  return VIDEO_EXTENSIONS.has(path.posix.extname(sourcePath || "").toLowerCase());
+}
+
+async function readEarlyVideoTiming(descriptor) {
+  const extension = path.posix.extname(descriptorSourcePath(descriptor)).toLowerCase();
+  const size = Number(descriptor.size);
+  if (![".mp4", ".m4v", ".mov"].includes(extension) || !(size > 0)) return null;
+  const readRange = async (position, length) => {
+    const end = Math.min(size - 1, position + length - 1);
+    if (end < position) return null;
+    if (descriptor.kind === "ssh") {
+      const response = await remoteAgents.fetch(
+        descriptor,
+        "/file",
+        { path: descriptor.path },
+        { headers: { Range: `bytes=${position}-${end}` } },
+      );
+      if (!response.ok && response.status !== 206) return null;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return buffer.length === end - position + 1 ? buffer : null;
+    }
+    if (descriptor.kind === "s3") {
+      const result = await getS3Client(descriptor).send(new GetObjectCommand({
+        Bucket: descriptor.bucket,
+        Key: descriptor.key,
+        Range: `bytes=${position}-${end}`,
+      }));
+      if (!result.Body) return null;
+      const chunks = [];
+      for await (const chunk of result.Body) chunks.push(Buffer.from(chunk));
+      const buffer = Buffer.concat(chunks);
+      return buffer.length === end - position + 1 ? buffer : null;
+    }
+    return null;
+  };
+  return readIsoTimingFromReader(size, readRange);
 }
 
 function descriptorFileName(descriptor) {
@@ -1453,6 +1528,16 @@ function singleJob(key, task) {
     .finally(() => jobs.delete(key));
   jobs.set(key, promise);
   return promise;
+}
+
+async function compatibleVideo(descriptor) {
+  const key = sha256(`h264-v1:${JSON.stringify(descriptor)}`);
+  const destination = path.join(VIDEO_DIR, `${key}.mp4`);
+  const existing = await fsp.stat(destination).catch(() => null);
+  if (existing?.isFile() && existing.size > 0) return destination;
+  const input = await materialize(descriptor);
+  await singleJob(`video-transcode:${key}`, () => transcodeVideo(input, destination));
+  return destination;
 }
 
 function queueBrowserImage(task) {
@@ -2180,6 +2265,8 @@ function contentTypeFor(filePath) {
     ".m4v": "video/x-m4v",
     ".ogv": "video/ogg",
     ".ogg": "video/ogg",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
     ".mp3": "audio/mpeg",
     ".wav": "audio/wav",
     ".doc": "application/msword",
@@ -2662,10 +2749,121 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (url.pathname === "/api/file-cache") {
+    const descriptor = await ensureDescriptorVersion(
+      decodeDescriptor(url.searchParams.get("id")),
+    );
+    if (descriptor.kind === "local") {
+      sendJson(response, 200, {
+        cached: true,
+        local: true,
+        received: Number(descriptor.size) || 0,
+        total: Number(descriptor.size) || 0,
+      });
+      return;
+    }
+    const destination = materializedDestination(descriptor);
+    const stat = await fsp.stat(destination).catch(() => null);
+    const cached = Boolean(stat?.isFile() && stat.size > 0);
+    const progress = fileCacheProgress.get(sha256(JSON.stringify(descriptor))) || {};
+    if (cached) {
+      rememberFileCache(descriptor, stat.size, stat.size, true);
+    } else if (!progress.error || Date.now() - progress.updatedAt > 3000) {
+      materialize(descriptor).catch((error) => {
+        rememberFileCache(
+          descriptor,
+          progress.received || 0,
+          progress.total || descriptor.size || 0,
+          false,
+          error.message || "视频缓存失败",
+        );
+      });
+    }
+    sendJson(response, 200, {
+      cached,
+      local: false,
+      received: cached ? stat.size : progress.received || 0,
+      total: cached
+        ? stat.size
+        : progress.total || Number(descriptor.size) || 0,
+      error: cached ? "" : progress.error || "",
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/video-info") {
+    const descriptor = await ensureDescriptorVersion(
+      decodeDescriptor(url.searchParams.get("id")),
+    );
+    if (!descriptorIsVideo(descriptor)) throw new HttpError(415, "不是视频文件");
+    const filePath = descriptor.kind === "local"
+      ? descriptor.path
+      : materializedDestination(descriptor);
+    const stat = await fsp.stat(filePath).catch(() => null);
+    const progress = fileCacheProgress.get(sha256(JSON.stringify(descriptor)));
+    if (!stat?.isFile() || stat.size <= 0 || (descriptor.kind !== "local" && progress && !progress.done)) {
+      const timing = await readEarlyVideoTiming(descriptor).catch(() => null);
+      sendJson(response, 200, { pending: true, ...(timing || {}) });
+      return;
+    }
+    const [timing, playback] = await Promise.all([
+      readVideoTiming(filePath),
+      probeVideo(filePath),
+    ]);
+    sendJson(response, 200, {
+      pending: false,
+      ...(timing || {}),
+      ...playback,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/video-compatible") {
+    const descriptor = await ensureDescriptorVersion(
+      decodeDescriptor(url.searchParams.get("id")),
+    );
+    if (!descriptorIsVideo(descriptor)) throw new HttpError(415, "不是视频文件");
+    const filePath = await compatibleVideo(descriptor);
+    const originalName = descriptorFileName(descriptor);
+    const outputName = `${originalName.slice(0, originalName.length - path.extname(originalName).length)}.mp4`;
+    await sendFile(
+      response,
+      filePath,
+      "video/mp4",
+      true,
+      {
+        "Content-Disposition": inlineDisposition(outputName),
+        "X-Video-Transcoded": "1",
+      },
+      request.headers.range,
+    );
+    return;
+  }
+
   if (url.pathname === "/api/file") {
     let descriptor = decodeDescriptor(url.searchParams.get("id"));
     if (descriptor.directory) throw new HttpError(400, "目录不能作为文件打开");
     const download = url.searchParams.get("download") === "1";
+    if (descriptorIsVideo(descriptor) && descriptor.kind !== "local") {
+      descriptor = await ensureDescriptorVersion(descriptor);
+      const destination = materializedDestination(descriptor);
+      const stat = await fsp.stat(destination).catch(() => null);
+      if (stat?.isFile() && stat.size > 0) {
+        await sendFile(
+          response,
+          destination,
+          contentTypeFor(destination),
+          true,
+          {
+            "Content-Disposition": (download ? attachmentDisposition : inlineDisposition)(
+              descriptorFileName(descriptor),
+            ),
+          },
+          request.headers.range,
+        );
+        return;
+      }
+    }
     if (descriptorIsImage(descriptor)) {
       descriptor = await ensureDescriptorVersion(descriptor);
       const filePath = await materialize(descriptor);
@@ -2744,6 +2942,7 @@ async function main() {
     fsp.mkdir(BROWSER_IMAGE_DIR, { recursive: true }),
     fsp.mkdir(DEEP_ZOOM_DIR, { recursive: true }),
     fsp.mkdir(REMOTE_DIR, { recursive: true }),
+    fsp.mkdir(VIDEO_DIR, { recursive: true }),
   ]);
 
   sharp.cache({ memory: 256, files: 100, items: 100 });

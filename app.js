@@ -11,6 +11,8 @@ let SERVER =
   ["127.0.0.1", "localhost", "files.localhost"].includes(location.hostname)
     ? location.origin
     : "";
+let serverReconnectTimer = null;
+let serverReconnectAttempt = 0;
 
 const state = {
   token: "",
@@ -41,6 +43,7 @@ const state = {
   currentFileText: null,
   currentFileTextTruncated: false,
   currentFileWritable: false,
+  currentFileReadOnlyView: false,
   textEditMode: false,
   textSaveMode: "manual",
   textDefaultMode: "edit",
@@ -61,6 +64,25 @@ const state = {
   activeThumbnailLoads: 0,
   thumbnailGeneration: 0,
   viewerLoadingTimer: null,
+  videoCacheToken: 0,
+  videoCacheTimer: null,
+  videoUsingCache: false,
+  videoScrubbing: false,
+  videoFpsLocked: false,
+  videoTiming: null,
+  videoTimingResolved: false,
+  videoCache: null,
+  videoShownFrame: null,
+  videoHoldDirection: 0,
+  videoStepToken: 0,
+  videoFastPlayback: false,
+  videoFallbackAttempted: false,
+  videoUsingCompatible: false,
+  videoRequestedTime: null,
+  videoSourceTransition: "",
+  videoZoom: 1,
+  videoPanX: 0,
+  videoPanY: 0,
   filePreviewController: null,
   uploadInProgress: false,
   uploadPickerTarget: null,
@@ -105,7 +127,6 @@ const elements = {
   settingsButton: $("#settingsButton"),
   homeButton: $("#homeButton"),
   backButton: $("#backButton"),
-  refreshButton: $("#refreshButton"),
   sourcePath: $("#sourcePath"),
   pathJumpForm: $("#pathJumpForm"),
   favorites: $("#favorites"),
@@ -121,6 +142,7 @@ const elements = {
   directoryTree: $("#directoryTree"),
   directoryEmpty: $("#directoryEmpty"),
   directoryUpButton: $("#directoryUpButton"),
+  directoryRefreshButton: $("#directoryRefreshButton"),
   sidebarResizer: $("#sidebarResizer"),
   searchInput: $("#searchInput"),
   thumbnailSize: $("#thumbnailSize"),
@@ -168,7 +190,20 @@ const elements = {
   codeLineNumbers: $("#codeLineNumbers"),
   officePreview: $("#officePreview"),
   videoPreview: $("#videoPreview"),
+  videoStage: $("#videoStage"),
   videoPlayer: $("#videoPlayer"),
+  videoTimeline: $("#videoTimeline"),
+  videoPreviousFrame: $("#videoPreviousFrame"),
+  videoPlayButton: $("#videoPlayButton"),
+  videoNextFrame: $("#videoNextFrame"),
+  videoTime: $("#videoTime"),
+  videoFrame: $("#videoFrame"),
+  videoFps: $("#videoFps"),
+  videoCacheStatus: $("#videoCacheStatus"),
+  videoZoomIn: $("#videoZoomIn"),
+  videoZoomOut: $("#videoZoomOut"),
+  videoZoomReset: $("#videoZoomReset"),
+  videoFullscreen: $("#videoFullscreen"),
   fileFrame: $("#fileFrame"),
   copyFileTextButton: $("#copyFileTextButton"),
   copyFilePathButton: $("#copyFilePathButton"),
@@ -1270,7 +1305,6 @@ function showHome() {
   elements.homeView.classList.remove("hidden");
   elements.galleryView.classList.add("hidden");
   elements.locationBar.classList.add("hidden");
-  elements.refreshButton.classList.add("hidden");
   history.pushState(null, "", IS_EXTENSION ? "#" : "/");
 }
 
@@ -1280,7 +1314,6 @@ function showGallery() {
   elements.fileView.classList.add("hidden");
   elements.viewerView.classList.add("hidden");
   elements.locationBar.classList.remove("hidden");
-  elements.refreshButton.classList.remove("hidden");
 }
 
 async function loadFavorites() {
@@ -1917,7 +1950,25 @@ async function saveInputAsFavorite() {
   showToast("路径已加入收藏");
 }
 
-async function connectServer(forceRestart = false) {
+function clearServerReconnect() {
+  clearTimeout(serverReconnectTimer);
+  serverReconnectTimer = null;
+  serverReconnectAttempt = 0;
+}
+
+function scheduleServerReconnect() {
+  if (serverReconnectTimer) return;
+  const wait = Math.min(30_000, 1000 * (2 ** serverReconnectAttempt));
+  serverReconnectAttempt += 1;
+  elements.serverStatus.textContent = "本地能力已断开，正在自动重连…";
+  elements.serverStatus.className = "status pending reconnecting";
+  serverReconnectTimer = setTimeout(async () => {
+    serverReconnectTimer = null;
+    if (!await connectServer(true, false)) scheduleServerReconnect();
+  }, wait);
+}
+
+async function connectServer(forceRestart = false, retryAutomatically = true) {
   try {
     if (IS_EXTENSION) {
       const result = await chrome.runtime.sendMessage({
@@ -1926,6 +1977,7 @@ async function connectServer(forceRestart = false) {
       if (!result?.ok) throw new Error(result?.error || "无法启动本地能力");
       SERVER = result.url;
       state.token = result.token;
+      clearServerReconnect();
       elements.serverStatus.textContent = "本地能力已连接";
       elements.serverStatus.className = "status online";
       return true;
@@ -1934,15 +1986,19 @@ async function connectServer(forceRestart = false) {
     if (!response.ok) throw new Error("服务未启动");
     const data = await response.json();
     state.token = data.token;
+    clearServerReconnect();
     elements.serverStatus.textContent = "本地服务已连接";
     elements.serverStatus.className = "status online";
     return true;
   } catch (error) {
-    elements.serverStatus.textContent = "本地能力不可用";
-    elements.serverStatus.className = "status offline";
+    elements.serverStatus.textContent = retryAutomatically
+      ? "本地能力已断开，正在自动重连…"
+      : "本地能力重连中…";
+    elements.serverStatus.className = "status pending reconnecting";
     elements.formError.textContent = IS_EXTENSION
       ? error.message
       : "本地开发服务未启动。";
+    if (retryAutomatically) scheduleServerReconnect();
     return false;
   }
 }
@@ -2908,21 +2964,25 @@ function navigateDirectoryUp() {
 async function refreshCurrentDirectory() {
   const node = state.selectedDirectory;
   if (!node) return;
+  const button = elements.directoryRefreshButton;
+  button.disabled = true;
+  button.classList.add("refreshing");
   clearSelection();
-  if (node.syntheticS3Root && state.activeS3Node) {
-    await openS3Root(state.activeS3Node, true);
-    return;
-  }
-
-  const activeEntry = node.entries.find(
-    (entry) => entry.id === state.currentTreeFileId,
-  );
-  const activePath = activeEntry ? entryPathForCopy(activeEntry) : "";
-  const imageWasOpen = !elements.viewerView.classList.contains("hidden");
-  const fileWasOpen = !elements.fileView.classList.contains("hidden");
-  elements.galleryLoading.classList.remove("hidden");
   try {
+    if (node.syntheticS3Root && state.activeS3Node) {
+      await openS3Root(state.activeS3Node, true);
+      return;
+    }
+
+    const activeEntry = node.entries.find(
+      (entry) => entry.id === state.currentTreeFileId,
+    );
+    const activePath = activeEntry ? entryPathForCopy(activeEntry) : "";
+    const imageWasOpen = !elements.viewerView.classList.contains("hidden");
+    const fileWasOpen = !elements.fileView.classList.contains("hidden");
+    elements.galleryLoading.classList.remove("hidden");
     await loadDirectoryNode(node, true);
+    state.readyThumbnails.clear();
     updateSelectedDirectory(node, false);
     if (!node.archiveId) {
       history.replaceState(routeState(node.source), "", routeForSource(node.source));
@@ -2951,6 +3011,8 @@ async function refreshCurrentDirectory() {
     showToast(`刷新失败：${error.message}`);
   } finally {
     elements.galleryLoading.classList.add("hidden");
+    button.disabled = false;
+    button.classList.remove("refreshing");
   }
 }
 
@@ -2963,7 +3025,7 @@ function formattedFileKind(entry) {
   if (["pdf", "mp3", "wav", "m4a", "aac", "flac"].includes(extension)) {
     return "browser";
   }
-  if (["mp4", "webm", "mov", "m4v", "ogv", "ogg"].includes(extension)) {
+  if (["mp4", "webm", "mov", "m4v", "ogv", "ogg", "avi", "mkv"].includes(extension)) {
     return "video";
   }
   if (["docx", "xlsx", "pptx"].includes(extension)) return extension;
@@ -3077,7 +3139,7 @@ function markdownRenderer() {
   if (globalThis.MarkdownEnhanced) {
     renderer.use(MarkdownEnhanced.texmath, {
       engine: MarkdownEnhanced.katex,
-      delimiters: "dollars",
+      delimiters: ["dollars", "brackets", "beg_end"],
       katexOptions: {
         throwOnError: false,
         strict: false,
@@ -3488,8 +3550,14 @@ function setCurrentFileText(content, truncated = false) {
     : null;
   elements.textEditControls.classList.toggle(
     "hidden",
-    !descriptor || descriptor.kind === "archive" || !state.currentFileWritable,
+    !descriptor ||
+      descriptor.kind === "archive" ||
+      (!state.currentFileWritable && !state.currentFileReadOnlyView),
   );
+  elements.editTextButton.textContent = state.currentFileReadOnlyView
+    ? "只读编辑"
+    : "编辑";
+  updateTextSaveControls();
 }
 
 function clearTextAutoSave() {
@@ -3511,13 +3579,20 @@ function updateTextEditorLineNumbers() {
 }
 
 function updateTextSaveControls() {
+  elements.textEditorInput.readOnly = !state.currentFileWritable;
+  elements.textSaveMode.classList.toggle("hidden", !state.currentFileWritable);
   elements.saveTextButton.classList.toggle(
     "hidden",
-    !state.textEditMode && !state.textDirty,
+    !state.currentFileWritable || (!state.textEditMode && !state.textDirty),
+  );
+  elements.textSaveStatus.classList.toggle(
+    "hidden",
+    !state.currentFileWritable && !state.currentFileReadOnlyView,
   );
   elements.saveTextButton.disabled = state.textSaving || !state.textDirty;
   elements.saveTextButton.textContent = state.textSaving ? "保存中…" : "保存";
-  if (state.textSaving) setTextSaveStatus("正在保存…");
+  if (state.currentFileReadOnlyView) setTextSaveStatus("只读");
+  else if (state.textSaving) setTextSaveStatus("正在保存…");
   else if (state.textDirty) {
     setTextSaveStatus(
       state.textSaveMode === "auto" ? "等待自动保存" : "有未保存修改",
@@ -3578,6 +3653,7 @@ async function putCurrentText(entry, content, retry = true) {
 
 async function saveCurrentText() {
   if (
+    !state.currentFileWritable ||
     !state.textDirty ||
     state.textSaving ||
     !state.currentFileEntry
@@ -3678,7 +3754,11 @@ async function setTextEditMode(editing) {
   if (!state.currentFileEntry || state.currentFileText === null) return;
   if (editing && state.currentFileTextTruncated) await loadFullTextForEditing();
   state.textEditMode = editing;
-  elements.editTextButton.textContent = editing ? "预览" : "编辑";
+  elements.editTextButton.textContent = editing
+    ? "预览"
+    : state.currentFileReadOnlyView
+      ? "只读编辑"
+      : "编辑";
   elements.textEditor.classList.toggle("hidden", !editing);
   elements.htmlViewControls.classList.toggle(
     "hidden",
@@ -3854,6 +3934,7 @@ async function openFileViewer(entry) {
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
   state.currentFileWritable = false;
+  state.currentFileReadOnlyView = false;
   elements.copyFileTextButton.classList.add("hidden");
   elements.textEditControls.classList.add("hidden");
   elements.textEditor.classList.add("hidden");
@@ -3912,9 +3993,7 @@ async function openFileViewer(entry) {
   elements.codePreview.classList.add("hidden");
   elements.officePreview.classList.add("hidden");
   elements.videoPreview.classList.add("hidden");
-  elements.videoPlayer.pause();
-  elements.videoPlayer.removeAttribute("src");
-  elements.videoPlayer.load();
+  stopVideoPlayback();
   elements.formattedFileError.classList.add("hidden");
 
   const previewLimit = previewLimitForKind(kind);
@@ -3941,10 +4020,7 @@ async function openFileViewer(entry) {
   delete elements.fileFrame.dataset.renderEntry;
   if (kind === "html") await setHtmlViewMode(state.htmlDefaultViewMode);
   if (kind === "video") {
-    elements.videoPlayer.autoplay = false;
-    elements.videoPlayer.src = url;
-    elements.videoPreview.classList.remove("hidden");
-    elements.formattedFileLoading.classList.add("hidden");
+    openVideoPreview(entry);
     return;
   }
   if (kind === "office-legacy") {
@@ -3995,7 +4071,11 @@ async function openFileViewer(entry) {
       ? await response.arrayBuffer()
       : await response.text();
     if (controller.signal.aborted) return;
-    state.currentFileWritable = (await capabilitiesPromise).writable === true;
+    const capabilities = await capabilitiesPromise;
+    state.currentFileWritable = capabilities.writable === true;
+    state.currentFileReadOnlyView =
+      kind === "markdown" &&
+      capabilities.readOnly === true;
     if (controller.signal.aborted || state.currentFileEntry !== entry) return;
 
     if (kind === "markdown") {
@@ -4044,7 +4124,8 @@ async function openFileViewer(entry) {
     if (
       state.currentFileText !== null &&
       state.currentFileWritable &&
-      state.textDefaultMode === "edit"
+      state.textDefaultMode === "edit" &&
+      !["markdown", "html"].includes(kind)
     ) {
       await setTextEditMode(true);
     }
@@ -4059,6 +4140,577 @@ async function openFileViewer(entry) {
   }
 }
 
+function stopVideoCacheWatch() {
+  state.videoCacheToken += 1;
+  clearTimeout(state.videoCacheTimer);
+  state.videoCacheTimer = null;
+}
+
+function stopVideoPlayback() {
+  stopVideoCacheWatch();
+  releaseVideoHold();
+  state.videoFastPlayback = false;
+  state.videoUsingCache = false;
+  state.videoCache = null;
+  state.videoScrubbing = false;
+  state.videoShownFrame = null;
+  state.videoFpsLocked = false;
+  state.videoTiming = null;
+  state.videoTimingResolved = false;
+  state.videoTimingSource = null;
+  state.videoFallbackAttempted = false;
+  state.videoUsingCompatible = false;
+  state.videoRequestedTime = null;
+  state.videoSourceTransition = "";
+  resetVideoZoom();
+  if (videoFullscreenElement() === elements.videoPreview) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+  }
+  elements.videoPlayer.playbackRate = 1;
+  elements.videoPlayer.pause();
+  elements.videoPlayer.removeAttribute("src");
+  elements.videoPlayer.load();
+}
+
+const VIDEO_ZOOM_MAX = 8;
+let videoStagePointer = null;
+let videoStageClickTimer = null;
+
+function applyVideoZoom() {
+  const video = elements.videoPlayer;
+  const zoom = state.videoZoom;
+  video.style.transform =
+    zoom === 1
+      ? ""
+      : `translate(${state.videoPanX}px, ${state.videoPanY}px) scale(${zoom})`;
+  elements.videoStage.classList.toggle("zoomed", zoom > 1);
+  elements.videoZoomReset.textContent = `${zoom.toFixed(zoom >= 10 ? 0 : 1)}×`;
+}
+
+function clampVideoPan() {
+  if (state.videoZoom <= 1) {
+    state.videoZoom = 1;
+    state.videoPanX = 0;
+    state.videoPanY = 0;
+    return;
+  }
+  const rect = elements.videoStage.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  state.videoPanX = Math.min(
+    0,
+    Math.max(rect.width * (1 - state.videoZoom), state.videoPanX),
+  );
+  state.videoPanY = Math.min(
+    0,
+    Math.max(rect.height * (1 - state.videoZoom), state.videoPanY),
+  );
+}
+
+function resetVideoZoom() {
+  state.videoZoom = 1;
+  state.videoPanX = 0;
+  state.videoPanY = 0;
+  elements.videoStage.classList.remove("panning");
+  applyVideoZoom();
+}
+
+function zoomVideoAt(clientX, clientY, nextZoom) {
+  const rect = elements.videoStage.getBoundingClientRect();
+  const previous = state.videoZoom;
+  const zoom = Math.min(VIDEO_ZOOM_MAX, Math.max(1, nextZoom));
+  const pointX = clientX - rect.left;
+  const pointY = clientY - rect.top;
+  const contentX = (pointX - state.videoPanX) / previous;
+  const contentY = (pointY - state.videoPanY) / previous;
+  state.videoZoom = zoom;
+  state.videoPanX = pointX - contentX * zoom;
+  state.videoPanY = pointY - contentY * zoom;
+  clampVideoPan();
+  applyVideoZoom();
+}
+
+function zoomVideoBy(factor) {
+  const rect = elements.videoStage.getBoundingClientRect();
+  zoomVideoAt(rect.left + rect.width / 2, rect.top + rect.height / 2, state.videoZoom * factor);
+}
+
+function formatVideoFps(fps) {
+  return String(Math.round(fps * 1000) / 1000);
+}
+
+function activeVideoTiming() {
+  if (state.videoFpsLocked) {
+    const fps = Number(elements.videoFps.value);
+    const duration = elements.videoPlayer.duration;
+    if (!(fps > 0) || !Number.isFinite(duration) || duration <= 0) return null;
+    const frameCount = Math.max(1, Math.round(duration * fps));
+    return {
+      fps,
+      frameCount,
+      timescale: 1000000,
+      runs: [{ count: frameCount, delta: 1000000 / fps }],
+    };
+  }
+  return state.videoTiming?.frameCount > 0 ? state.videoTiming : null;
+}
+
+function currentVideoFps() {
+  return activeVideoTiming()?.fps || 0;
+}
+
+function timeAtFrame(frame) {
+  const timing = activeVideoTiming();
+  if (!timing) return 0;
+  let remaining = Math.max(0, frame);
+  let ticks = 0;
+  for (const run of timing.runs) {
+    const take = Math.min(remaining, run.count);
+    ticks += take * run.delta;
+    remaining -= take;
+    if (remaining <= 0) break;
+  }
+  return ticks / timing.timescale;
+}
+
+function frameIndexAtTime(time) {
+  const timing = activeVideoTiming();
+  if (!timing) return 0;
+  const target = Math.max(0, time) * timing.timescale;
+  let ticks = 0;
+  let frame = 0;
+  for (const run of timing.runs) {
+    const span = run.count * run.delta;
+    if (target < ticks + span) {
+      return frame + Math.min(
+        run.count - 1,
+        Math.max(0, Math.floor((target - ticks) / run.delta + 1e-4)),
+      );
+    }
+    ticks += span;
+    frame += run.count;
+  }
+  return Math.max(0, frame - 1);
+}
+
+function ensureVideoFpsOption(fps) {
+  const label = formatVideoFps(fps);
+  let option = [...elements.videoFps.options].find((item) => item.value === label);
+  if (!option) {
+    option = document.createElement("option");
+    option.value = label;
+    option.textContent = label;
+    elements.videoFps.append(option);
+  }
+  elements.videoFps.value = label;
+}
+
+function applyVideoTiming(info) {
+  if (state.videoFpsLocked || !(info?.fps > 0)) return;
+  state.videoTimingSource = info;
+  const duration = elements.videoPlayer.duration;
+  let frameCount = info.frameCount;
+  let runs = info.runs;
+  if (!(frameCount > 0) && Number.isFinite(duration) && duration > 0) {
+    frameCount = Math.max(1, Math.round(duration * info.fps));
+    runs = [{ count: frameCount, delta: (info.timescale || 1000000) / info.fps }];
+  }
+  if (!(frameCount > 0) || !runs?.length) return;
+  state.videoTiming = {
+    fps: info.fps,
+    frameCount,
+    timescale: info.timescale || 1000000,
+    runs,
+    estimated: Boolean(info.estimated),
+  };
+  ensureVideoFpsOption(info.fps);
+  updateVideoHud();
+}
+
+async function loadVideoTiming(entry, token) {
+  try {
+    const info = await api("/api/video-info", { id: entry.id }, 0, 0);
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    if (info?.pending) {
+      if (info.fps > 0) {
+        state.videoTimingResolved = true;
+        applyVideoTiming(info);
+      }
+      return;
+    }
+    state.videoTimingResolved = true;
+    if (info?.needsTranscode) {
+      applyVideoTiming(info);
+      switchToCompatibleVideo(entry);
+      return;
+    }
+    applyVideoTiming(info);
+    if (!state.videoTiming && !elements.videoPlayer.paused) observeVideoFrameRate();
+  } catch {
+    // 保持“检测中”，避免把暂时性的读取失败误报为估算帧率。
+  }
+}
+
+function formatVideoClock(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--.---";
+  const milliseconds = Math.floor((seconds % 1) * 1000);
+  const total = Math.floor(seconds);
+  const secondsPart = total % 60;
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  const body = hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secondsPart).padStart(2, "0")}`
+    : `${minutes}:${String(secondsPart).padStart(2, "0")}`;
+  return `${body}.${String(milliseconds).padStart(3, "0")}`;
+}
+
+function videoHudTime() {
+  const video = elements.videoPlayer;
+  if (video.paused && Number.isFinite(state.videoShownFrame)) return timeAtFrame(state.videoShownFrame);
+  return Number.isFinite(video.currentTime) ? video.currentTime : 0;
+}
+
+function updateVideoHud() {
+  const video = elements.videoPlayer;
+  const timing = activeVideoTiming();
+  const time = videoHudTime();
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  elements.videoTime.textContent =
+    `${formatVideoClock(time)} / ${formatVideoClock(duration)}`;
+  if (timing) {
+    const index = Number.isFinite(state.videoShownFrame) && video.paused
+      ? Math.min(timing.frameCount - 1, state.videoShownFrame)
+      : frameIndexAtTime(time);
+    elements.videoFrame.textContent = `帧 ${index + 1} / ${timing.frameCount}`;
+  } else {
+    elements.videoFrame.textContent = "帧 —";
+  }
+  elements.videoPlayButton.textContent = video.paused ? "播放" : "暂停";
+  if (!state.videoScrubbing) {
+    elements.videoTimeline.max = String(duration || 0);
+    elements.videoTimeline.step = timing ? String(1 / timing.fps) : "0.001";
+    elements.videoTimeline.value = String(Math.min(time, duration || time));
+  }
+  const cache = state.videoCache;
+  if (!cache) {
+    elements.videoCacheStatus.textContent = "正在准备缓存…";
+  } else if (cache.transcoding) {
+    elements.videoCacheStatus.textContent = "浏览器不支持原编码，正在转换为 H.264…";
+  } else if (cache.compatible) {
+    elements.videoCacheStatus.textContent = "已转换为 H.264 兼容格式";
+  } else if (cache.local) {
+    elements.videoCacheStatus.textContent = "本地文件";
+  } else if (cache.cached) {
+    elements.videoCacheStatus.textContent = "已缓存，可流畅逐帧";
+  } else if (cache.error) {
+    elements.videoCacheStatus.textContent = `缓存失败：${cache.error}`;
+  } else {
+    const total = Number(cache.total) || 0;
+    const received = Number(cache.received) || 0;
+    const percent = total > 0 ? Math.min(100, received / total * 100) : 0;
+    const speed = Number(cache.speed) || 0;
+    elements.videoCacheStatus.textContent =
+      `正在缓存 ${formatBytes(received)}` +
+      `${total ? ` / ${formatBytes(total)} (${percent.toFixed(0)}%)` : ""}` +
+      `${speed > 0 ? ` · ${formatBytes(speed)}/s` : ""}`;
+  }
+}
+
+function releaseVideoHold(direction = null) {
+  if (direction !== null && state.videoHoldDirection !== direction) return;
+  state.videoHoldDirection = 0;
+}
+
+function currentVideoFrame() {
+  if (Number.isFinite(state.videoShownFrame)) return state.videoShownFrame;
+  return frameIndexAtTime(elements.videoPlayer.currentTime || 0);
+}
+
+async function presentVideoFrame(frame, token) {
+  const video = elements.videoPlayer;
+  const timing = activeVideoTiming();
+  if (!video.src || !timing || token !== state.videoStepToken) return false;
+  video.pause();
+  const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
+  const maxFrame = timing.frameCount - 1;
+  const next = Math.min(maxFrame, Math.max(0, frame));
+  if (next === currentVideoFrame()) return false;
+  const frameStart = timeAtFrame(next);
+  const frameDuration = Math.max(0.001, timeAtFrame(next + 1) - frameStart);
+  const time = Math.min(
+    Math.max(0, duration - 0.001),
+    frameStart + frameDuration * 0.5,
+  );
+  state.videoShownFrame = next;
+  state.videoRequestedTime = time;
+  updateVideoHud();
+  if (state.videoSourceTransition && video.readyState === 0) return true;
+  await new Promise((resolve) => {
+    let settled = false;
+    const tolerance = Math.max(0.02, frameDuration * 0.6);
+    const finish = () => {
+      if (settled) return;
+      const landed = video.currentTime || 0;
+      if (video.seeking || Math.abs(landed - time) > tolerance) return;
+      settled = true;
+      clearTimeout(timer);
+      video.removeEventListener("seeked", finish);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      video.removeEventListener("seeked", finish);
+      resolve();
+    }, 300);
+    video.addEventListener("seeked", finish);
+    const current = video.currentTime || 0;
+    if (Math.abs(current - time) <= tolerance && !video.seeking) finish();
+    else video.currentTime = time;
+  });
+  if (token !== state.videoStepToken) return false;
+  if (video.requestVideoFrameCallback) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 80);
+      video.requestVideoFrameCallback(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+  if (token !== state.videoStepToken) return false;
+  state.videoShownFrame = next;
+  updateVideoHud();
+  return true;
+}
+
+function beginVideoFrameHold(direction) {
+  const token = ++state.videoStepToken;
+  state.videoHoldDirection = direction;
+  const run = async () => {
+    await presentVideoFrame(currentVideoFrame() + direction, token);
+    if (token !== state.videoStepToken || state.videoHoldDirection !== direction) return;
+    await delay(240);
+    if (token !== state.videoStepToken || state.videoHoldDirection !== direction) return;
+    await playVideoAtDoubleSpeed(direction, token);
+  };
+  run();
+}
+
+async function playVideoAtDoubleSpeed(direction, token) {
+  const video = elements.videoPlayer;
+  const restore = () => {
+    state.videoFastPlayback = false;
+    video.playbackRate = 1;
+    if (!video.paused) video.pause();
+    state.videoShownFrame = frameIndexAtTime(video.currentTime || 0);
+    updateVideoHud();
+  };
+  state.videoShownFrame = null;
+  state.videoFastPlayback = true;
+  try {
+    if (direction > 0) {
+      video.playbackRate = 2;
+      await video.play().catch(() => {});
+      while (
+        token === state.videoStepToken &&
+        state.videoHoldDirection === direction &&
+        !video.ended
+      ) {
+        await delay(50);
+      }
+      return;
+    }
+    const started = performance.now();
+    const origin = video.currentTime || 0;
+    while (token === state.videoStepToken && state.videoHoldDirection === direction) {
+      const elapsed = (performance.now() - started) / 1000;
+      const target = Math.max(0, origin - elapsed * 2);
+      state.videoShownFrame = frameIndexAtTime(target);
+      updateVideoHud();
+      if (!video.seeking) video.currentTime = target;
+      if (target <= 0) break;
+      await delay(50);
+    }
+  } finally {
+    if (token === state.videoStepToken) restore();
+  }
+}
+
+async function useCachedVideo(entry, time, paused, token) {
+  const video = elements.videoPlayer;
+  state.videoUsingCache = true;
+  state.videoRequestedTime = Number.isFinite(state.videoRequestedTime)
+    ? state.videoRequestedTime
+    : time;
+  state.videoSourceTransition = "cache";
+  try {
+    await new Promise((resolve) => {
+      const finish = () => {
+        video.removeEventListener("loadedmetadata", finish);
+        resolve();
+      };
+      video.addEventListener("loadedmetadata", finish);
+      video.src = apiUrl("/api/file", { id: entry.id, media: "cache" });
+    });
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    const targetTime = Number(state.videoRequestedTime) || 0;
+    if (targetTime > 0 && Number.isFinite(video.duration)) {
+      await new Promise((resolve) => {
+        const finish = () => {
+          video.removeEventListener("seeked", finish);
+          resolve();
+        };
+        video.addEventListener("seeked", finish);
+        video.currentTime = Math.min(targetTime, Math.max(0, video.duration - 0.001));
+      });
+    }
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    if (!paused) video.play().catch(() => {});
+    updateVideoHud();
+  } finally {
+    if (state.videoSourceTransition === "cache") state.videoSourceTransition = "";
+  }
+}
+
+function watchVideoCache(entry) {
+  const token = state.videoCacheToken;
+  let sample = null;
+  const tick = async () => {
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    try {
+      const status = await api("/api/file-cache", { id: entry.id }, 0, 0);
+      if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+      const now = performance.now();
+      const received = Number(status.received) || 0;
+      if (sample && now > sample.time && received >= sample.received) {
+        status.speed = (received - sample.received) * 1000 / (now - sample.time);
+      }
+      sample = { received, time: now };
+      state.videoCache = status;
+      updateVideoHud();
+      if (status.local) {
+        state.videoUsingCache = true;
+        return;
+      }
+      if (status.cached && !state.videoUsingCache) {
+        const video = elements.videoPlayer;
+        await useCachedVideo(entry, video.currentTime || 0, video.paused, token);
+        if (!state.videoTiming || state.videoTiming.estimated) loadVideoTiming(entry, token);
+        return;
+      }
+      if (status.cached || status.local) {
+        if (!state.videoTiming || state.videoTiming.estimated) loadVideoTiming(entry, token);
+      }
+      if (status.cached) return;
+    } catch (error) {
+      if (token !== state.videoCacheToken) return;
+      state.videoCache = { error: error.message || "缓存状态读取失败" };
+      updateVideoHud();
+    }
+    state.videoCacheTimer = setTimeout(tick, 400);
+  };
+  tick();
+}
+
+function observeVideoFrameRate() {
+  const video = elements.videoPlayer;
+  if (!video.requestVideoFrameCallback || state.videoFpsLocked) return;
+  if (!state.videoTimingResolved) return;
+  if (state.videoTiming && !state.videoTiming.estimated) return;
+  let previous = null;
+  const samples = [];
+  const sample = (_now, metadata) => {
+    if (
+      elements.videoPreview.classList.contains("hidden") ||
+      state.videoFpsLocked ||
+      (state.videoTiming && !state.videoTiming.estimated)
+    ) return;
+    const delta = previous == null ? 0 : metadata.mediaTime - previous;
+    previous = metadata.mediaTime;
+    if (delta >= 1 / 240 && delta <= 1) samples.push(1 / delta);
+    if (samples.length < 8) {
+      if (!video.paused) video.requestVideoFrameCallback(sample);
+      return;
+    }
+    const sorted = samples.toSorted((left, right) => left - right);
+    const fps = sorted[Math.floor(sorted.length / 2)];
+    const duration = video.duration;
+    const frameCount = Number.isFinite(duration) ? Math.max(1, Math.round(duration * fps)) : 0;
+    applyVideoTiming({
+      fps,
+      frameCount,
+      timescale: 1000000,
+      runs: frameCount ? [{ count: frameCount, delta: 1000000 / fps }] : [],
+      estimated: true,
+    });
+  };
+  video.requestVideoFrameCallback(sample);
+}
+
+function switchToCompatibleVideo(entry) {
+  if (state.videoFallbackAttempted || state.currentFileEntry?.id !== entry.id) return;
+  state.videoFallbackAttempted = true;
+  state.videoUsingCompatible = true;
+  if (!Number.isFinite(state.videoRequestedTime)) {
+    state.videoRequestedTime = elements.videoPlayer.currentTime || 0;
+  }
+  state.videoSourceTransition = "compatible";
+  state.videoCache = {
+    ...(state.videoCache || {}),
+    transcoding: true,
+    error: "",
+  };
+  updateVideoHud();
+  elements.videoPlayer.src = apiUrl("/api/video-compatible", { id: entry.id });
+  elements.videoPlayer.load();
+}
+
+function handleVideoPlaybackError() {
+  if (elements.videoPreview.classList.contains("hidden")) return;
+  const entry = state.currentFileEntry;
+  if (!entry || formattedFileKind(entry) !== "video") return;
+  if (!state.videoFallbackAttempted) {
+    switchToCompatibleVideo(entry);
+    return;
+  }
+  state.videoCache = {
+    ...(state.videoCache || {}),
+    transcoding: false,
+    error: "原视频编码不受浏览器支持，兼容格式转换失败",
+  };
+  state.videoSourceTransition = "";
+  updateVideoHud();
+}
+
+async function openVideoPreview(entry) {
+  stopVideoPlayback();
+  const token = state.videoCacheToken;
+  state.videoFpsLocked = false;
+  elements.videoFps.value = "";
+  elements.videoPreview.classList.remove("hidden");
+  elements.formattedFileLoading.classList.add("hidden");
+  elements.videoPlayer.preload = "metadata";
+  try {
+    const status = await api("/api/file-cache", { id: entry.id }, 0, 0);
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    state.videoCache = status;
+    state.videoUsingCache = Boolean(status.cached || status.local);
+    elements.videoPlayer.src = apiUrl("/api/file", {
+      id: entry.id,
+      ...(status.cached && !status.local ? { media: "cache" } : {}),
+    });
+    updateVideoHud();
+    loadVideoTiming(entry, token);
+    if (!state.videoUsingCache) watchVideoCache(entry);
+  } catch (error) {
+    if (token !== state.videoCacheToken || state.currentFileEntry?.id !== entry.id) return;
+    state.videoCache = { error: error.message || "缓存状态读取失败" };
+    elements.videoPlayer.src = apiUrl("/api/file", { id: entry.id });
+    updateVideoHud();
+  }
+}
+
 function closeFileViewer(showDirectory = true) {
   if (elements.fileView.classList.contains("hidden")) return;
   clearTextAutoSave();
@@ -4068,6 +4720,7 @@ function closeFileViewer(showDirectory = true) {
   state.currentFileText = null;
   state.currentFileTextTruncated = false;
   state.currentFileWritable = false;
+  state.currentFileReadOnlyView = false;
   state.textEditMode = false;
   state.textDirty = false;
   state.textSaving = false;
@@ -4081,9 +4734,7 @@ function closeFileViewer(showDirectory = true) {
   elements.codePreview.querySelector("code").replaceChildren();
   elements.codeLineNumbers.replaceChildren();
   elements.officePreview.replaceChildren();
-  elements.videoPlayer.pause();
-  elements.videoPlayer.removeAttribute("src");
-  elements.videoPlayer.load();
+  stopVideoPlayback();
   elements.fileView.classList.add("hidden");
   if (showDirectory) {
     if (state.targetType === "file") showHome();
@@ -4580,7 +5231,7 @@ elements.settingsButton.addEventListener("click", () => {
 });
 elements.backButton.addEventListener("click", navigateDirectoryUp);
 elements.directoryUpButton.addEventListener("click", navigateDirectoryUp);
-elements.refreshButton.addEventListener("click", refreshCurrentDirectory);
+elements.directoryRefreshButton.addEventListener("click", refreshCurrentDirectory);
 elements.uploadButton.addEventListener("click", (event) => {
   event.stopPropagation();
   state.uploadPickerTarget = state.selectedDirectory;
@@ -4688,6 +5339,212 @@ elements.textEditorInput.addEventListener("keydown", (event) => {
     saveCurrentText();
   }
 });
+elements.videoPlayer.addEventListener("loadedmetadata", () => {
+  if (state.videoUsingCompatible) {
+    state.videoCache = {
+      ...(state.videoCache || {}),
+      transcoding: false,
+      compatible: true,
+      cached: true,
+      error: "",
+    };
+    if (state.videoSourceTransition === "compatible") {
+      const targetTime = Number(state.videoRequestedTime) || 0;
+      if (targetTime > 0 && Number.isFinite(elements.videoPlayer.duration)) {
+        const target = Math.min(
+          targetTime,
+          Math.max(0, elements.videoPlayer.duration - 0.001),
+        );
+        if (Math.abs((elements.videoPlayer.currentTime || 0) - target) > 0.001) {
+          elements.videoPlayer.addEventListener("seeked", () => {
+            if (state.videoSourceTransition === "compatible") {
+              state.videoSourceTransition = "";
+            }
+          }, { once: true });
+          elements.videoPlayer.currentTime = target;
+        } else {
+          state.videoSourceTransition = "";
+        }
+      } else {
+        state.videoSourceTransition = "";
+      }
+    }
+  }
+  if (!state.videoTiming && state.videoTimingSource) {
+    applyVideoTiming(state.videoTimingSource);
+  }
+  const entry = state.currentFileEntry;
+  if (
+    entry &&
+    !state.videoTiming &&
+    (state.videoCache?.local || state.videoCache?.cached)
+  ) {
+    loadVideoTiming(entry, state.videoCacheToken);
+  }
+  updateVideoHud();
+});
+elements.videoPlayer.addEventListener("error", handleVideoPlaybackError);
+elements.videoPlayer.addEventListener("timeupdate", () => {
+  if (!state.videoSourceTransition && !elements.videoPlayer.seeking) {
+    state.videoRequestedTime = elements.videoPlayer.currentTime || 0;
+  }
+  updateVideoHud();
+});
+elements.videoPlayer.addEventListener("play", () => {
+  state.videoShownFrame = null;
+  if (!state.videoSourceTransition) {
+    state.videoRequestedTime = elements.videoPlayer.currentTime || 0;
+  }
+  if (!state.videoFastPlayback) releaseVideoHold();
+  updateVideoHud();
+  observeVideoFrameRate();
+});
+elements.videoPlayer.addEventListener("pause", updateVideoHud);
+elements.videoStage.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  videoStagePointer = {
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    panX: state.videoPanX,
+    panY: state.videoPanY,
+    moved: false,
+  };
+  elements.videoStage.setPointerCapture(event.pointerId);
+});
+elements.videoStage.addEventListener("pointermove", (event) => {
+  if (!videoStagePointer || event.pointerId !== videoStagePointer.id) return;
+  const dx = event.clientX - videoStagePointer.x;
+  const dy = event.clientY - videoStagePointer.y;
+  if (Math.hypot(dx, dy) < 4) return;
+  videoStagePointer.moved = true;
+  if (state.videoZoom <= 1) return;
+  elements.videoStage.classList.add("panning");
+  state.videoPanX = videoStagePointer.panX + dx;
+  state.videoPanY = videoStagePointer.panY + dy;
+  clampVideoPan();
+  applyVideoZoom();
+});
+const finishVideoStagePointer = (event) => {
+  if (!videoStagePointer || event.pointerId !== videoStagePointer.id) return;
+  const moved = videoStagePointer.moved;
+  videoStagePointer = null;
+  elements.videoStage.classList.remove("panning");
+  if (moved) return;
+  clearTimeout(videoStageClickTimer);
+  videoStageClickTimer = setTimeout(() => {
+    videoStageClickTimer = null;
+    releaseVideoHold();
+    const video = elements.videoPlayer;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  }, 220);
+};
+elements.videoStage.addEventListener("pointerup", finishVideoStagePointer);
+elements.videoStage.addEventListener("pointercancel", (event) => {
+  if (!videoStagePointer || event.pointerId !== videoStagePointer.id) return;
+  videoStagePointer = null;
+  elements.videoStage.classList.remove("panning");
+});
+elements.videoStage.addEventListener("dblclick", (event) => {
+  event.preventDefault();
+  clearTimeout(videoStageClickTimer);
+  videoStageClickTimer = null;
+  resetVideoZoom();
+});
+elements.videoStage.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    zoomVideoAt(
+      event.clientX,
+      event.clientY,
+      state.videoZoom * Math.exp(-delta * 0.0015),
+    );
+  },
+  { passive: false },
+);
+new ResizeObserver(() => {
+  clampVideoPan();
+  applyVideoZoom();
+}).observe(elements.videoStage);
+
+function videoFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function syncVideoFullscreenButton() {
+  const active = videoFullscreenElement() === elements.videoPreview;
+  elements.videoFullscreen.textContent = active ? "退出全屏" : "全屏";
+  elements.videoFullscreen.title = active ? "退出全屏（F 或 Esc）" : "全屏（F）";
+  elements.videoFullscreen.setAttribute("aria-pressed", String(active));
+}
+
+async function toggleVideoFullscreen() {
+  const preview = elements.videoPreview;
+  if (videoFullscreenElement() === preview) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) await exit.call(document);
+    return;
+  }
+  const request = preview.requestFullscreen || preview.webkitRequestFullscreen;
+  if (!request) return;
+  try {
+    await request.call(preview);
+  } catch {
+    window.parent?.postMessage({ type: "remotefs-overlay", action: "maximize" }, "*");
+  }
+}
+
+elements.videoZoomIn.addEventListener("click", () => zoomVideoBy(1.25));
+elements.videoZoomOut.addEventListener("click", () => zoomVideoBy(0.8));
+elements.videoZoomReset.addEventListener("click", resetVideoZoom);
+elements.videoFullscreen.addEventListener("click", () => {
+  toggleVideoFullscreen().catch(() => {});
+});
+document.addEventListener("fullscreenchange", syncVideoFullscreenButton);
+document.addEventListener("webkitfullscreenchange", syncVideoFullscreenButton);
+elements.videoPlayButton.addEventListener("click", () => {
+  releaseVideoHold();
+  const video = elements.videoPlayer;
+  if (video.paused) video.play().catch(() => {});
+  else video.pause();
+});
+const bindVideoFrameButton = (button, direction) => {
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    beginVideoFrameHold(direction);
+  });
+  const release = () => releaseVideoHold(direction);
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+  button.addEventListener("pointerleave", release);
+};
+bindVideoFrameButton(elements.videoPreviousFrame, -1);
+bindVideoFrameButton(elements.videoNextFrame, 1);
+elements.videoFps.addEventListener("change", () => {
+  state.videoFpsLocked = true;
+  updateVideoHud();
+});
+elements.videoTimeline.addEventListener("pointerdown", () => {
+  state.videoScrubbing = true;
+});
+elements.videoTimeline.addEventListener("input", () => {
+  state.videoShownFrame = null;
+  releaseVideoHold();
+  elements.videoPlayer.pause();
+  state.videoRequestedTime = Number(elements.videoTimeline.value) || 0;
+  elements.videoPlayer.currentTime = state.videoRequestedTime;
+  updateVideoHud();
+});
+const finishVideoScrub = () => {
+  state.videoScrubbing = false;
+};
+elements.videoTimeline.addEventListener("change", finishVideoScrub);
+elements.videoTimeline.addEventListener("pointerup", finishVideoScrub);
+elements.videoTimeline.addEventListener("pointercancel", finishVideoScrub);
 elements.closeViewerButton.addEventListener("click", closeViewer);
 elements.viewerHomeButton.addEventListener("click", showHome);
 elements.previousButton.addEventListener("click", () => moveImage(-1));
@@ -4817,6 +5674,50 @@ document.addEventListener("keydown", (event) => {
   ) return;
   event.preventDefault();
 });
+
+document.addEventListener("keydown", (event) => {
+  if (
+    elements.fileView.classList.contains("hidden") ||
+    elements.videoPreview.classList.contains("hidden")
+  ) return;
+  const target = event.target;
+  if (
+    target instanceof HTMLElement &&
+    (target.closest("textarea, select") ||
+      (target.closest("input") && target.id !== "videoTimeline"))
+  ) return;
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    beginVideoFrameHold(event.key === "ArrowLeft" ? -1 : 1);
+  } else if (event.key === " ") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    releaseVideoHold();
+    const video = elements.videoPlayer;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  } else if (
+    event.key.toLowerCase() === "f" &&
+    !event.repeat &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleVideoFullscreen().catch(() => {});
+  }
+}, true);
+
+document.addEventListener("keyup", (event) => {
+  if (event.key === "ArrowLeft") releaseVideoHold(-1);
+  if (event.key === "ArrowRight") releaseVideoHold(1);
+});
+
+window.addEventListener("blur", () => releaseVideoHold());
 
 document.addEventListener("keydown", (event) => {
   if (elements.viewerView.classList.contains("hidden")) return;

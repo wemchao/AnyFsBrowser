@@ -5,6 +5,9 @@ const markdownLayoutInputs = [
 const htmlViewModeInputs = [
   ...document.querySelectorAll('input[name="htmlDefaultViewMode"]'),
 ];
+const externalLinkOpenModeInputs = [
+  ...document.querySelectorAll('input[name="externalLinkOpenMode"]'),
+];
 const textDefaultModeInputs = [
   ...document.querySelectorAll('input[name="textDefaultMode"]'),
 ];
@@ -23,6 +26,7 @@ function storageGet() {
       "interfaceStyle",
       "markdownDefaultLayout",
       "htmlDefaultViewMode",
+      "externalLinkOpenMode",
       "textDefaultMode",
       "textSaveMode",
       "maxPreviewBytes",
@@ -33,6 +37,7 @@ function storageGet() {
     interfaceStyle: localStorage.getItem("interfaceStyle"),
     markdownDefaultLayout: localStorage.getItem("markdownDefaultLayout"),
     htmlDefaultViewMode: localStorage.getItem("htmlDefaultViewMode"),
+    externalLinkOpenMode: localStorage.getItem("externalLinkOpenMode"),
     textDefaultMode: localStorage.getItem("textDefaultMode"),
     textSaveMode: localStorage.getItem("textSaveMode"),
     maxPreviewBytes: localStorage.getItem("maxPreviewBytes"),
@@ -74,6 +79,13 @@ function selectHtmlViewMode(mode) {
   }
 }
 
+function selectExternalLinkOpenMode(mode) {
+  const selected = mode === "popup" ? "popup" : "tab";
+  for (const input of externalLinkOpenModeInputs) {
+    input.checked = input.value === selected;
+  }
+}
+
 function selectTextDefaultMode(mode) {
   const selected = mode === "read" ? "read" : "edit";
   for (const input of textDefaultModeInputs) {
@@ -93,6 +105,7 @@ async function init() {
   selectStyle(result.interfaceStyle);
   selectMarkdownLayout(result.markdownDefaultLayout);
   selectHtmlViewMode(result.htmlDefaultViewMode);
+  selectExternalLinkOpenMode(result.externalLinkOpenMode);
   selectTextDefaultMode(result.textDefaultMode);
   selectTextSaveMode(result.textSaveMode);
   maxPreviewBytes.value = String(
@@ -126,6 +139,15 @@ for (const input of htmlViewModeInputs) {
     if (!input.checked) return;
     selectHtmlViewMode(input.value);
     await storageSet({ htmlDefaultViewMode: input.value });
+    showSavedNotice();
+  });
+}
+
+for (const input of externalLinkOpenModeInputs) {
+  input.addEventListener("change", async () => {
+    if (!input.checked) return;
+    selectExternalLinkOpenMode(input.value);
+    await storageSet({ externalLinkOpenMode: input.value });
     showSavedNotice();
   });
 }

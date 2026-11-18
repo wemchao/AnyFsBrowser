@@ -27,7 +27,6 @@
       </div>
       <div class="top-actions">
         <span id="serverStatus" class="status pending">正在启动本地能力…</span>
-        <button id="refreshButton" class="secondary hidden" type="button">刷新</button>
         <button id="settingsButton" class="icon-button" type="button" title="插件设置" aria-label="插件设置">⚙</button>
       </div>
     </header>
@@ -142,7 +141,15 @@
       <section id="galleryView" class="gallery-view hidden">
         <aside class="directory-panel">
           <div class="directory-panel-heading">
-            <span>目录</span>
+            <div class="directory-heading-title">
+              <span>目录</span>
+              <button id="directoryRefreshButton" class="directory-tool-button directory-refresh-button"
+                type="button" title="刷新目录和文件列表" aria-label="刷新目录和文件列表">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M13.6 5.1A6 6 0 1 0 14 8h-1.5a4.5 4.5 0 1 1-1.3-3.2L9.5 6.5H14V2l-1.6 1.6a6 6 0 0 0-8.7-.1l1.1 1a4.5 4.5 0 0 1 6.5.1z"/>
+                </svg>
+              </button>
+            </div>
             <button id="directoryUpButton" class="directory-tool-button" type="button" title="返回上一级">↑</button>
           </div>
           <div id="directoryTree" class="directory-tree"></div>
@@ -255,7 +262,41 @@
           </div>
           <div id="officePreview" class="office-preview hidden"></div>
           <div id="videoPreview" class="video-preview hidden">
-            <video id="videoPlayer" controls preload="metadata" playsinline></video>
+            <div id="videoStage" class="video-stage">
+              <video id="videoPlayer" preload="metadata" playsinline></video>
+            </div>
+            <div class="video-transport">
+              <input id="videoTimeline" type="range" min="0" max="0" step="0.001"
+                value="0" aria-label="视频进度">
+              <div class="video-controls">
+                <button id="videoPreviousFrame" type="button" title="上一帧（←，按住 2 倍速）">上一帧</button>
+                <button id="videoPlayButton" type="button" title="播放或暂停（空格）">播放</button>
+                <button id="videoNextFrame" type="button" title="下一帧（→，按住 2 倍速）">下一帧</button>
+                <span id="videoTime">0:00.000 / 0:00.000</span>
+                <span id="videoFrame">帧 0</span>
+                <label class="video-fps">帧率
+                  <select id="videoFps" aria-label="逐帧帧率">
+                    <option value="" selected>检测中</option>
+                    <option value="10">10</option>
+                    <option value="12">12</option>
+                    <option value="15">15</option>
+                    <option value="23.976">23.976</option>
+                    <option value="24">24</option>
+                    <option value="25">25</option>
+                    <option value="30">30</option>
+                    <option value="50">50</option>
+                    <option value="60">60</option>
+                  </select>
+                </label>
+                <div class="video-zoom">
+                  <button id="videoZoomOut" type="button" title="缩小画面（滚轮）">−</button>
+                  <button id="videoZoomReset" type="button" title="恢复原始画面（双击画面）">1×</button>
+                  <button id="videoZoomIn" type="button" title="放大画面（滚轮，拖动查看）">+</button>
+                  <button id="videoFullscreen" type="button" title="全屏（F）">全屏</button>
+                </div>
+                <span id="videoCacheStatus">正在准备缓存…</span>
+              </div>
+            </div>
           </div>
           <div id="formattedFileError" class="formatted-file-error hidden"></div>
         </div>

@@ -67,6 +67,29 @@
           </div>
         </section>
 
+        <section class="settings-section">
+          <div class="section-title">
+            <h2>外部 S3 / OSS 链接</h2>
+            <p>设置在网页中左键点击对象存储链接时的打开方式。</p>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>左键打开方式</strong>
+              <span>鼠标中键始终在新标签页打开，不受此设置影响</span>
+            </div>
+            <div class="layout-setting">
+              <label>
+                <input type="radio" name="externalLinkOpenMode" value="tab">
+                <span>新标签页</span>
+              </label>
+              <label>
+                <input type="radio" name="externalLinkOpenMode" value="popup">
+                <span>页面悬浮窗</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-section markdown-settings-section">
           <div class="section-title">
             <h2>文档默认显示</h2>
@@ -145,12 +168,12 @@
         <section class="settings-section">
           <div class="section-title">
             <h2>文本编辑</h2>
-            <p>适用于文本、代码、JSON、Markdown 和 HTML 文件。</p>
+            <p>Markdown 和 HTML 始终先预览，其他可写文本文档可默认进入编辑模式。</p>
           </div>
           <div class="setting-row">
             <div>
               <strong>默认打开模式</strong>
-              <span>文件可写时默认进入编辑模式；只读文件始终使用阅读模式</span>
+              <span>应用于其他可写文本文档；Markdown、HTML 和只读文件始终先预览</span>
             </div>
             <div class="layout-setting">
               <label>

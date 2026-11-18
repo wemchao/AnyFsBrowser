@@ -108,9 +108,19 @@ function objectStorageAppUrl(raw) {
     `${encodeURIComponent(url.hostname)}${routePath}`;
 }
 
-async function openObjectStorageUri(uri) {
+async function openObjectStorageUri(uri, disposition = "default") {
   const url = objectStorageAppUrl(uri);
-  await chrome.tabs.create({ url, active: true });
+  let mode = "tab";
+  if (disposition !== "tab") {
+    const result = await chrome.storage.local.get("externalLinkOpenMode");
+    mode = result.externalLinkOpenMode === "popup" ? "popup" : "tab";
+  }
+  if (mode === "popup") {
+    return { overlayUrl: url };
+  } else {
+    await chrome.tabs.create({ url, active: true });
+    return {};
+  }
 }
 
 let nativePort;
@@ -222,8 +232,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "openObjectStorage") {
-    openObjectStorageUri(message.uri)
-      .then(() => sendResponse({ ok: true }))
+    openObjectStorageUri(message.uri, message.disposition)
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
